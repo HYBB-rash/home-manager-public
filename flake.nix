@@ -1,0 +1,104 @@
+{
+  description = "User's NixOS and Home Manager configuration";
+
+  inputs = {
+    # 日常软件使用固定发行分支；Codex 等需要新版本的软件单独从 unstable 获取。
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
+    nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+
+    home-manager = {
+      url = "github:nix-community/home-manager/release-26.05";
+      # 复用本 flake 的 nixpkgs，避免 Home Manager 再引入一套不同版本的软件包。
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+
+    nix-flatpak.url = "github:gmodena/nix-flatpak/main";
+
+
+    codex-desktop-linux = {
+      # 固定到已验证的提交，避免上游更新未经确认就改变桌面端行为。
+      url = "github:ilysenko/codex-desktop-linux/main";
+      inputs.nixpkgs.follows = "nixpkgs-unstable";
+    };
+
+    hermes-agent = {
+      url = "github:NousResearch/hermes-agent";
+      inputs.nixpkgs.follows = "nixpkgs-unstable";
+    };
+  };
+
+  outputs =
+    {
+      nixpkgs,
+      nixpkgs-unstable,
+      home-manager,
+      codex-desktop-linux,
+      hermes-agent,
+      nix-flatpak,
+      ...
+    }:
+    let
+      system = "x86_64-linux";
+      pkgs = nixpkgs.legacyPackages.${system};
+      # 高频应用单独跟随 unstable，并只放行其中实际使用的非自由软件。
+      pkgsUnstable = import nixpkgs-unstable {
+        inherit system;
+        config.allowUnfreePredicate =
+          package:
+          builtins.elem (nixpkgs.lib.getName package) [
+            "qq"
+            "vivaldi"
+            "widevine-cdm"
+            "claude-code"
+          ];
+      };
+
+      # Codex Desktop 的上游二次封装和 Home Manager 集成集中在独立组件中。
+      codexDesktopBundle = import ./home/applications/codex-desktop/package.nix {
+        inherit pkgs;
+        codexDesktop = codex-desktop-linux.packages.${system}.default;
+        codexCli = pkgs.lib.getExe' pkgsUnstable.codex "codex";
+      };
+
+      nixosConfiguration = nixpkgs.lib.nixosSystem {
+        inherit system;
+        modules = [ ./configuration.nix ];
+      };
+      homeConfiguration = home-manager.lib.homeManagerConfiguration {
+        inherit pkgs;
+
+        # 将 unstable 包集注入 home/ 下各模块的参数。
+        extraSpecialArgs = {
+          inherit pkgsUnstable;
+          hermesAgentPackage = hermes-agent.packages.${system}.default;
+          inherit codexDesktopBundle;
+        };
+
+        modules = [
+          nix-flatpak.homeManagerModules.nix-flatpak
+          ./home
+        ];
+      };
+    in
+    {
+      nixosConfigurations.nixos = nixosConfiguration;
+      homeConfigurations.user = homeConfiguration;
+
+      # 开发工具只在进入 `nix develop` 时可用，不写入 Home Manager 环境。
+      devShells.${system}.default = pkgs.mkShell {
+        packages = [
+          pkgs.nodejs
+          pkgs.python3
+          pkgs.pnpm
+        ];
+      };
+
+      # `nix flake check` 同时验证 NixOS 和完整的 Home Manager 配置。
+      checks.${system} = {
+        nixos = nixosConfiguration.config.system.build.toplevel;
+        home-manager = homeConfiguration.activationPackage;
+      };
+
+      formatter.${system} = pkgs.nixfmt;
+    };
+}
