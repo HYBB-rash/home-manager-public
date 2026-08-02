@@ -23,4 +23,9 @@
 
   # 让 Home Manager 安装并管理自身。
   programs.home-manager.enable = true;
+
+  services.agentLearningSync = {
+    enable = true;
+    repository = "/home/user/Agent";
+  };
 }

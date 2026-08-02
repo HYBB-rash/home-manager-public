@@ -232,6 +232,7 @@ start_app() {
     --user \
     --quiet \
     --collect \
+    --setenv="XDG_CONFIG_HOME=$HOME/.config" \
     --unit="$unit" \
     --property=Type=exec \
     "$executable"

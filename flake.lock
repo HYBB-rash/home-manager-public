@@ -1,5 +1,18 @@
 {
   "nodes": {
+    "agent-learning": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1785678222,
+        "narHash": "sha256-1LRrBuly45DhzO+USGp/Hwk5TFKsRxpfbP1P0QlgzN0=",
+        "path": "/home/user/Agent/home-manager",
+        "type": "path"
+      },
+      "original": {
+        "path": "/home/user/Agent/home-manager",
+        "type": "path"
+      }
+    },
     "codex-desktop-linux": {
       "inputs": {
         "flake-utils": "flake-utils",
@@ -257,6 +270,7 @@
     },
     "root": {
       "inputs": {
+        "agent-learning": "agent-learning",
         "codex-desktop-linux": "codex-desktop-linux",
         "hermes-agent": "hermes-agent",
         "home-manager": "home-manager",

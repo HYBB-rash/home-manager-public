@@ -14,6 +14,11 @@
 
     nix-flatpak.url = "github:gmodena/nix-flatpak/main";
 
+    agent-learning = {
+      url = "path:/home/user/Agent/home-manager";
+      flake = false;
+    };
+
 
     codex-desktop-linux = {
       # 固定到已验证的提交，避免上游更新未经确认就改变桌面端行为。
@@ -35,6 +40,7 @@
       codex-desktop-linux,
       hermes-agent,
       nix-flatpak,
+      agent-learning,
       ...
     }:
     let
@@ -76,6 +82,7 @@
 
         modules = [
           nix-flatpak.homeManagerModules.nix-flatpak
+          (import "${agent-learning}/agent-learning-sync.nix")
           ./home
         ];
       };
