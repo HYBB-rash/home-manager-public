@@ -34,7 +34,7 @@
     addToSystemPackages = true;
 
     # 保持凭据在 Nix store 之外；部署前以 0600、hermes 所有者创建此文件。
-    environmentFiles = [ "/var/lib/hermes/env" ];
+    environmentFiles = [ "/home/user/.hermes/.env" ];
   };
 
   services.gvfs.enable = true;
