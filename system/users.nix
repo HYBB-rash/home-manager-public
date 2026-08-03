@@ -16,6 +16,11 @@
     shell = pkgs.fish;
   };
 
+  users.users.rita = {
+    isNormalUser = true;
+    description = "Rita";
+  };
+
   security.sudo.extraRules = [
     {
       users = [ "user" ];
