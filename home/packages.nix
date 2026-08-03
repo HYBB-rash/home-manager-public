@@ -1,5 +1,4 @@
 {
-  hermesAgentPackage,
   lib,
   pkgs,
   pkgsUnstable,
@@ -28,7 +27,6 @@
     # 命令行工具
     pkgs.fastfetch
     pkgs.gh
-    hermesAgentPackage
     pkgsUnstable.codex
   ];
 }

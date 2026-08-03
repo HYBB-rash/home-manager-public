@@ -11,6 +11,7 @@
       "networkmanager"
       "wheel"
       "vboxusers"
+      "docker"
     ];
     shell = pkgs.fish;
   };

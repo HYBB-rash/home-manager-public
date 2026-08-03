@@ -23,6 +23,20 @@
     package = pkgs.waydroid-nftables;
   };
 
+  # Hermes 由其上游 NixOS 模块管理。容器模式提供持久的可变运行环境，
+  # 同时保留宿主机上的 `hermes` CLI 入口。
+  services.hermes-agent = {
+    enable = true;
+    container = {
+      enable = true;
+      hostUsers = [ "user" ];
+    };
+    addToSystemPackages = true;
+
+    # 保持凭据在 Nix store 之外；部署前以 0600、hermes 所有者创建此文件。
+    environmentFiles = [ "/var/lib/hermes/env" ];
+  };
+
   services.gvfs.enable = true;
   services.udisks2.enable = true;
   services.flatpak.enable = true;

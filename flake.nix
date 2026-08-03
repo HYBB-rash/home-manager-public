@@ -26,6 +26,11 @@
       inputs.nixpkgs.follows = "nixpkgs-unstable";
     };
 
+    hermes-agent = {
+      # Hermes 提供 NixOS 模块，负责服务、配置和容器生命周期。
+      url = "github:NousResearch/hermes-agent";
+      inputs.nixpkgs.follows = "nixpkgs-unstable";
+    };
   };
 
   outputs =
@@ -64,7 +69,10 @@
 
       nixosConfiguration = nixpkgs.lib.nixosSystem {
         inherit system;
-        modules = [ ./configuration.nix ];
+        modules = [
+          hermes-agent.nixosModules.default
+          ./configuration.nix
+        ];
       };
       homeConfiguration = home-manager.lib.homeManagerConfiguration {
         inherit pkgs;
@@ -72,7 +80,6 @@
         # 将 unstable 包集注入 home/ 下各模块的参数。
         extraSpecialArgs = {
           inherit pkgsUnstable;
-          hermesAgentPackage = hermes-agent.packages.${system}.default;
           inherit codexDesktopBundle;
         };
 
