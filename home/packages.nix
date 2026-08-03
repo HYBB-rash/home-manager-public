@@ -3,6 +3,7 @@
   pkgs,
   pkgsUnstable,
   ccSwitchCli,
+  hermesDesktop,
   ...
 }:
 
@@ -25,6 +26,8 @@
     pkgsUnstable.claude-code
     pkgsUnstable.opencode
     ccSwitchCli
+    ccSwitchCli
+    hermesDesktop
 
     # 命令行工具
     pkgs.fastfetch

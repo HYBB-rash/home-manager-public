@@ -16,5 +16,9 @@ The private source's local PicACG input is intentionally omitted from this
 branch. Add your own optional local packages only after configuring a source
 that is safe and available on your machine.
 
+Encrypted runtime credentials and profile payloads are intentionally omitted
+from this branch. Configure your own secrets before enabling any service that
+depends on them.
+
 Do not commit credentials or machine identifiers. The private source repository
 uses a blocking export scan and publishes this branch only when that scan passes.

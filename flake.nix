@@ -20,6 +20,11 @@
       inputs.nixpkgs.follows = "nixpkgs-unstable";
     };
 
+    sops-nix = {
+      url = "github:Mic92/sops-nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+
     agent-learning = {
       url = "path:/home/user/Agent/home-manager";
       flake = false;
@@ -33,7 +38,7 @@
     };
 
     hermes-agent = {
-      # Hermes 提供 NixOS 模块，负责服务、配置和容器生命周期。
+      # NixOS 模块管理服务，Desktop 包由 Home Manager 安装到用户环境。
       url = "github:NousResearch/hermes-agent";
       inputs.nixpkgs.follows = "nixpkgs-unstable";
     };
@@ -48,6 +53,7 @@
       hermes-agent,
       nix-flatpak,
       cc-switch-cli,
+      sops-nix,
       agent-learning,
       ...
     }:
@@ -76,8 +82,11 @@
 
       nixosConfiguration = nixpkgs.lib.nixosSystem {
         inherit system;
+        specialArgs = {
+          hermesAgentPackage = hermes-agent.packages.${system}.default;
+        };
         modules = [
-          hermes-agent.nixosModules.default
+          sops-nix.nixosModules.sops
           ./configuration.nix
         ];
       };
@@ -88,6 +97,7 @@
         extraSpecialArgs = {
           inherit pkgsUnstable;
           ccSwitchCli = cc-switch-cli.packages.${system}.default;
+          hermesDesktop = hermes-agent.packages.${system}.desktop;
           inherit codexDesktopBundle;
         };
 

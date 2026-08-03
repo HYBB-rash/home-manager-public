@@ -64,6 +64,9 @@
     # 远程桌面
     remmina
     freerdp
+
+    # 容器管理
+    podman
   ];
 
   programs.firefox.enable = true;

@@ -6,7 +6,7 @@
 
   users.users.user = {
     isNormalUser = true;
-    description = "user";
+    description = "User";
     extraGroups = [
       "networkmanager"
       "wheel"
@@ -16,9 +16,9 @@
     shell = pkgs.fish;
   };
 
-  users.users.rita = {
+  users.users.user2 = {
     isNormalUser = true;
-    description = "Rita";
+    description = "Second User";
   };
 
   security.sudo.extraRules = [
