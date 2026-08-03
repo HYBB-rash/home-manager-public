@@ -19,16 +19,28 @@ VM 和宿主机桥接层中刻意不包含账号标识、微信密钥、原始�
 sudo nixos-rebuild switch --flake .#nixos
 nix build .#wechat-exporter-vm
 wechat-vmctl import result/*.ova
-wechat-vmctl start
+wechat-vmctl console
 ```
 
-导入后，`wechat-exporter-vm.service` 会在宿主机之后的每次启动时以无头模式
-启动 VM。第一次显式启动时会保留控制台，以便完成初始化和二维码登录。
+如果 `wechat-vmctl status` 已经能看到 `wechat-exporter`，说明 VM 已导入，
+不要再次执行 `import`，直接运行 `wechat-vmctl console`。该命令会通过受限的
+systemd 控制入口启动 VM，并用 FreeRDP 打开本地控制台。关闭 RDP 窗口不会
+关闭 VM；`wechat-exporter-vm.service` 会让它继续以无头模式运行，并在之后
+每次宿主机启动时自动恢复。
+
+`wechat-vmctl stop` 会依次尝试 Guest Additions 关机和 ACPI 关机；若客体
+因锁屏等原因没有响应，则保存完整 VM 状态后停止，不会直接强制断电。下次
+启动会从保存点继续运行。
 
 导入命令会检查或添加两个仅监听回环地址的 NAT 转发：22222 端口用于仅限
 SFTP 的快照账号，22223 端口用于 VM 操作者。它不会删除或改写已有的冲突
 规则。这个稀疏虚拟设备配有独立的 256 GiB ext4 数据盘，挂载到
 `/home/wechat-exporter/.var`，使微信 Flatpak 账号数据与 50 GiB 系统盘分离。
+
+RDP 控制台使用 Oracle Extension Pack 的 VRDE，只监听
+`127.0.0.1:33890`。`wechat-vmctl` 在 User 的 0700 状态目录中生成专用
+随机密码，以 `VBoxAuthSimple` 完成认证，并通过标准输入把连接参数交给
+FreeRDP，因此密码不会出现在进程参数中。RDP 的剪贴板和音频重定向均关闭。
 
 仅用于 VM 的 nixpkgs overlay 会把锁定版 LKL 镜像构建器硬编码的内存上限从
 100 MiB 提高到 512 MiB。这个调整只影响 OVA 构建，不会改变虚拟机配置的
@@ -43,14 +55,14 @@ wechat-vmctl operator-key
 wechat-vmctl pull-key
 ```
 
-在 VM 控制台中，分别登记上面显示的准确公钥：
+在 `wechat-vmctl console` 打开的 VM 控制台中，分别登记上面显示的准确公钥：
 
 ```bash
 sudo wechat-authorize-operator 'ssh-ed25519 ...'
 sudo wechat-authorize-puller 'ssh-ed25519 ...'
 ```
 
-在 VM 控制台中，显示虚拟机主机密钥指纹：
+在该 VM 控制台中，显示虚拟机主机密钥指纹：
 
 ```bash
 wechat-show-host-fingerprint
@@ -84,8 +96,9 @@ wechat-exporterctl test
 wechat-install-flatpak
 ```
 
-从 Xfce 菜单启动微信。此处停止，由人工扫码并在手机上确认。本配置中的
-任何服务都不会自动执行登录。
+从 RDP 控制台里的 Xfce 菜单启动微信。此处停止，由人工扫码并在手机上
+确认。本配置中的任何服务都不会自动执行登录。扫码完成后可以关闭 RDP
+窗口，VM 和微信会继续运行。
 
 ## 人工登录完成后
 

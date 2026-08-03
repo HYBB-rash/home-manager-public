@@ -13,12 +13,13 @@
     polkitPolicyOwners = [ "user" ];
   };
 
-  # 只允许系统配置实际需要的非自由 1Password 软件包。
+  # 只允许系统配置实际需要的非自由软件包。
   nixpkgs.config.allowUnfreePredicate =
     package:
     builtins.elem (lib.getName package) [
       "1password"
       "1password-cli"
+      "virtualbox-extpack"
     ];
 
   # 启用新式 Nix 命令和 flake 支持。

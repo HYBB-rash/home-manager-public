@@ -15,7 +15,10 @@
   };
 
   # 为迁移 Windows 微信数据的虚拟机提供 VirtualBox 宿主支持。
-  virtualisation.virtualbox.host.enable = true;
+  virtualisation.virtualbox.host = {
+    enable = true;
+    enableExtensionPack = true;
+  };
 
   # Pull only completed, integrity-checked VM snapshots into Second User's read-only view.
   services.wechatSnapshotBridge.enable = true;

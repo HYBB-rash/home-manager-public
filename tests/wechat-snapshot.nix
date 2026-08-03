@@ -81,5 +81,16 @@
         "'test ! -r /var/lib/wechat-snapshot-publisher/id_ed25519'"
     )
     machine.succeed("runuser -u user2 -- id -nG | grep -vw vboxusers")
+    machine.succeed(
+        "test \"$(systemctl show wechat-exporter-vm.service -p User --value)\" = user"
+    )
+    machine.succeed(
+        "systemctl cat wechat-exporter-vm.service "
+        "| grep -F '/run/wrappers/bin/VBoxHeadless --startvm wechat-exporter --vrde config'"
+    )
+    machine.succeed(
+        "systemctl show wechat-exporter-vm.service -p DeviceAllow --value "
+        "| grep -F '/dev/vboxdrv rw'"
+    )
   '';
 }

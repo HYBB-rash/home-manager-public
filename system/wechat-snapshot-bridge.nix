@@ -9,6 +9,12 @@ let
   cfg = config.services.wechatSnapshotBridge;
   stateDirectory = "wechat-snapshot-publisher";
   statePath = "/var/lib/${stateDirectory}";
+  operatorHome = "/home/user";
+  operatorState = "${operatorHome}/.local/state/wechat-vm";
+  virtualBoxHome = "${operatorHome}/.config/VirtualBox";
+  vmDirectory = "${operatorHome}/VirtualBox VMs/${cfg.vmName}";
+  rdpUser = "wechat-console";
+  vboxManage = "/run/current-system/sw/bin/VBoxManage";
 
   snapshotTool = pkgs.writeShellApplication {
     name = "wechat-snapshot";
@@ -58,24 +64,35 @@ let
       "$stage" ${statePath}/known_hosts
   '';
 
-  vmctl = pkgs.writeShellApplication {
-    name = "wechat-vmctl";
+  configureVm = pkgs.writeShellApplication {
+    name = "wechat-vm-configure";
     runtimeInputs = [
       pkgs.coreutils
-      pkgs.git
+      pkgs.gawk
       pkgs.gnugrep
-      pkgs.openssh
-      pkgs.virtualbox
+      pkgs.openssl
     ];
     text = ''
       set -euo pipefail
+      export HOME=${lib.escapeShellArg operatorHome}
+      export VBOX_USER_HOME=${lib.escapeShellArg virtualBoxHome}
       vm=${lib.escapeShellArg cfg.vmName}
-      operator_state="$HOME/.local/state/wechat-vm"
-      operator_key="$operator_state/operator_ed25519"
+      password_file=${lib.escapeShellArg "${operatorState}/rdp-password"}
+      install -d -m 0700 ${lib.escapeShellArg operatorState}
+      if [ ! -f "$password_file" ]; then
+        stage="$(mktemp ${lib.escapeShellArg "${operatorState}/rdp-password.XXXXXX"})"
+        trap 'rm -f -- "$stage"' EXIT
+        openssl rand -base64 32 >"$stage"
+        chmod 0600 "$stage"
+        mv "$stage" "$password_file"
+        trap - EXIT
+      fi
+      chmod 0600 "$password_file"
+
       ensure_nat_rule() {
         name=$1
         rule=$2
-        info="$(VBoxManage showvminfo "$vm" --machinereadable)"
+        info="$(${vboxManage} showvminfo "$vm" --machinereadable)"
         if printf '%s\n' "$info" | grep -Fq "$rule"; then
           return
         fi
@@ -83,37 +100,175 @@ let
           echo "VirtualBox NAT rule $name exists with unexpected settings" >&2
           exit 1
         fi
-        VBoxManage modifyvm "$vm" --natpf1 "$rule"
+        ${vboxManage} modifyvm "$vm" --natpf1 "$rule"
       }
-      configure_network() {
-        ensure_nat_rule wechat-pull 'wechat-pull,tcp,127.0.0.1,${toString cfg.remotePort},,22'
-        ensure_nat_rule wechat-operator 'wechat-operator,tcp,127.0.0.1,22223,,22'
+
+      ensure_nat_rule wechat-pull 'wechat-pull,tcp,127.0.0.1,${toString cfg.remotePort},,22'
+      ensure_nat_rule wechat-operator 'wechat-operator,tcp,127.0.0.1,22223,,22'
+
+      password="$(cat "$password_file")"
+      password_hash="$(${vboxManage} internalcommands passwordhash "$password" | awk '/^Password hash:/ { print $3 }')"
+      [ -n "$password_hash" ] || {
+        echo "VirtualBox did not return an RDP password hash" >&2
+        exit 1
+      }
+      ${vboxManage} modifyvm "$vm" \
+        --vrde=on \
+        --vrde-extpack=default \
+        --vrde-port=${toString cfg.rdpPort} \
+        --vrde-address=127.0.0.1 \
+        --vrde-auth-type=external \
+        --vrde-auth-library=VBoxAuthSimple \
+        --vrde-multi-con=off \
+        --vrde-reuse-con=on
+      ${vboxManage} setextradata "$vm" \
+        ${lib.escapeShellArg "VBoxAuthSimple/users/${rdpUser}"} "$password_hash"
+    '';
+  };
+
+  controlVmService = pkgs.writeShellScriptBin "wechat-vm-service-control" ''
+    set -euo pipefail
+    [ "$#" -eq 1 ] || { echo "usage: wechat-vm-service-control {start|stop|restart}" >&2; exit 2; }
+    case "$1" in
+      start|stop|restart)
+        exec ${pkgs.systemd}/bin/systemctl "$1" wechat-exporter-vm.service
+        ;;
+      *)
+        echo "unsupported VM service action: $1" >&2
+        exit 2
+        ;;
+    esac
+  '';
+
+  repairVmOwnership = pkgs.writeShellScript "wechat-vm-repair-ownership" ''
+    set -euo pipefail
+    for directory in \
+      ${lib.escapeShellArg virtualBoxHome} \
+      ${lib.escapeShellArg vmDirectory}; do
+      if [ -d "$directory" ]; then
+        ${pkgs.coreutils}/bin/chown -hR user:vboxusers "$directory"
+        ${pkgs.findutils}/bin/find "$directory" -type d \
+          -exec ${pkgs.coreutils}/bin/chmod 0700 '{}' +
+        ${pkgs.findutils}/bin/find "$directory" -type f \
+          -exec ${pkgs.coreutils}/bin/chmod 0600 '{}' +
+      fi
+    done
+  '';
+
+  stopVm = pkgs.writeShellApplication {
+    name = "wechat-vm-stop";
+    runtimeInputs = [
+      pkgs.coreutils
+      pkgs.gnused
+    ];
+    text = ''
+      set -euo pipefail
+      export HOME=${lib.escapeShellArg operatorHome}
+      export VBOX_USER_HOME=${lib.escapeShellArg virtualBoxHome}
+      vm=${lib.escapeShellArg cfg.vmName}
+      wait_for_poweroff() {
+        for _ in $(seq 1 30); do
+          state="$(${vboxManage} showvminfo "$vm" --machinereadable | sed -n 's/^VMState="\(.*\)"/\1/p')"
+          [ "$state" = poweroff ] && return 0
+          sleep 1
+        done
+        return 1
+      }
+      state="$(${vboxManage} showvminfo "$vm" --machinereadable | sed -n 's/^VMState="\(.*\)"/\1/p')"
+      case "$state" in
+        poweroff|saved|aborted)
+          exit 0
+          ;;
+        running)
+          ${vboxManage} controlvm "$vm" shutdown || true
+          wait_for_poweroff && exit 0
+          ${vboxManage} controlvm "$vm" acpipowerbutton || true
+          wait_for_poweroff && exit 0
+          ${vboxManage} controlvm "$vm" savestate
+          ;;
+        paused)
+          ${vboxManage} controlvm "$vm" savestate
+          ;;
+        *)
+          echo "cannot gracefully stop VM from state: $state" >&2
+          exit 1
+          ;;
+      esac
+    '';
+  };
+
+  vmctl = pkgs.writeShellApplication {
+    name = "wechat-vmctl";
+    runtimeInputs = [
+      pkgs.coreutils
+      pkgs.freerdp
+      pkgs.git
+      pkgs.gnugrep
+      pkgs.openssh
+    ];
+    text = ''
+      set -euo pipefail
+      export HOME=${lib.escapeShellArg operatorHome}
+      export VBOX_USER_HOME=${lib.escapeShellArg virtualBoxHome}
+      vm=${lib.escapeShellArg cfg.vmName}
+      operator_state=${lib.escapeShellArg operatorState}
+      operator_key="$operator_state/operator_ed25519"
+      start_service() {
+        /run/wrappers/bin/sudo ${controlVmService}/bin/wechat-vm-service-control start
+      }
+      rdp_args() {
+        password="$(cat "$operator_state/rdp-password")"
+        printf '%s\n' \
+          '/v:127.0.0.1:${toString cfg.rdpPort}' \
+          '/u:${rdpUser}' \
+          "/p:$password" \
+          '/sec:tls' \
+          '/cert:ignore' \
+          '+dynamic-resolution' \
+          '/network:auto' \
+          '-clipboard' \
+          '/audio-mode:1'
       }
       case "''${1:-}" in
         import)
           [ "$#" -eq 2 ] || { echo "usage: wechat-vmctl import OVA" >&2; exit 2; }
           [ -f "$2" ] || { echo "OVA does not exist: $2" >&2; exit 1; }
-          if VBoxManage showvminfo "$vm" >/dev/null 2>&1; then
+          if ${vboxManage} showvminfo "$vm" >/dev/null 2>&1; then
             echo "VirtualBox VM is already registered: $vm" >&2
             exit 1
           fi
-          VBoxManage import "$2" --vsys 0 --vmname "$vm"
-          configure_network
+          ${vboxManage} import "$2" --vsys 0 --vmname "$vm"
+          ${configureVm}/bin/wechat-vm-configure
           ;;
         configure-network)
-          configure_network
+          /run/wrappers/bin/sudo ${controlVmService}/bin/wechat-vm-service-control stop
+          ${configureVm}/bin/wechat-vm-configure
+          start_service
           ;;
-        start)
-          VBoxManage startvm "$vm" --type gui
-          ;;
-        start-headless)
-          VBoxManage startvm "$vm" --type headless
+        start|start-headless)
+          start_service
           ;;
         stop)
-          VBoxManage controlvm "$vm" acpipowerbutton
+          /run/wrappers/bin/sudo ${controlVmService}/bin/wechat-vm-service-control stop
           ;;
         status)
-          VBoxManage showvminfo "$vm"
+          ${vboxManage} showvminfo "$vm"
+          ;;
+        console)
+          start_service
+          [ -r "$operator_state/rdp-password" ] || {
+            echo "RDP password is not initialized" >&2
+            exit 1
+          }
+          rdp_args | xfreerdp /args-from:stdin
+          ;;
+        console-check)
+          start_service
+          [ -r "$operator_state/rdp-password" ] || {
+            echo "RDP password is not initialized" >&2
+            exit 1
+          }
+          { rdp_args; printf '%s\n' '+auth-only'; } | xfreerdp /args-from:stdin
           ;;
         pull-key)
           cat ${statePath}/id_ed25519.pub
@@ -143,10 +298,10 @@ let
         trust-host-key)
           [ "$#" -eq 2 ] || { echo "usage: wechat-vmctl trust-host-key SHA256:fingerprint" >&2; exit 2; }
           ssh-keyscan -t ed25519 -p ${toString cfg.remotePort} ${lib.escapeShellArg cfg.remoteHost} \
-            | sudo ${trustHostKey}/bin/wechat-snapshot-trust-host-key "$2"
+            | /run/wrappers/bin/sudo ${trustHostKey}/bin/wechat-snapshot-trust-host-key "$2"
           ;;
         *)
-          echo "usage: wechat-vmctl {import OVA|configure-network|start|start-headless|stop|status|pull-key|operator-key|trust-host-key FINGERPRINT|deploy EXPORTER_SOURCE}" >&2
+          echo "usage: wechat-vmctl {import OVA|configure-network|start|stop|status|console|console-check|pull-key|operator-key|trust-host-key FINGERPRINT|deploy EXPORTER_SOURCE}" >&2
           exit 2
           ;;
       esac
@@ -181,6 +336,12 @@ in
     remotePort = lib.mkOption {
       type = lib.types.port;
       default = 22222;
+    };
+
+    rdpPort = lib.mkOption {
+      type = lib.types.port;
+      default = 33890;
+      description = "Loopback-only VirtualBox VRDE console port.";
     };
 
     remoteUser = lib.mkOption {
@@ -322,31 +483,42 @@ in
       };
     };
 
+    systemd.services.wechat-exporter-vm-ownership = {
+      description = "Keep the WeChat VM registry owned by its operator";
+      serviceConfig = {
+        Type = "oneshot";
+        User = "root";
+        Group = "root";
+        ExecStart = repairVmOwnership;
+      };
+    };
+
     systemd.services.wechat-exporter-vm = {
       description = "Persistent VirtualBox WeChat exporter VM";
       wantedBy = [ "multi-user.target" ];
+      requires = [ "wechat-exporter-vm-ownership.service" ];
+      after = [ "wechat-exporter-vm-ownership.service" ];
       serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-        # VirtualBox 7.2's hardened vboxdrv rejects its system device for
-        # non-root callers, regardless of the vboxusers device-node mode.
-        # Keep the established VM registry while opening the driver as root.
-        User = "root";
-        Group = "root";
+        Type = "simple";
+        User = "user";
+        Group = "vboxusers";
         Environment = [
-          "HOME=/home/user"
-          "VBOX_USER_HOME=/home/user/.config/VirtualBox"
+          "HOME=${operatorHome}"
+          "VBOX_USER_HOME=${virtualBoxHome}"
         ];
-        # Keep the root service's device access limited to the VirtualBox driver
-        # nodes needed by VBoxHeadless.
+        # The NixOS wrapper briefly elevates VBoxHeadless for hardened driver
+        # setup, then the persistent VM process runs as the operator.
         DevicePolicy = "closed";
         DeviceAllow = [
           "/dev/vboxdrv rw"
           "/dev/vboxdrvu rw"
         ];
-        ExecCondition = "${pkgs.virtualbox}/bin/VBoxManage showvminfo ${cfg.vmName}";
-        ExecStart = "${pkgs.virtualbox}/bin/VBoxManage startvm ${cfg.vmName} --type headless";
-        ExecStop = "${pkgs.virtualbox}/bin/VBoxManage controlvm ${cfg.vmName} acpipowerbutton";
+        ExecCondition = "${vboxManage} showvminfo ${cfg.vmName}";
+        ExecStartPre = "${configureVm}/bin/wechat-vm-configure";
+        ExecStart = "/run/wrappers/bin/VBoxHeadless --startvm ${cfg.vmName} --vrde config";
+        ExecStop = "${stopVm}/bin/wechat-vm-stop";
+        Restart = "always";
+        RestartSec = "10s";
         TimeoutStopSec = "2min";
       };
     };
@@ -359,6 +531,10 @@ in
         commands = [
           {
             command = "${trustHostKey}/bin/wechat-snapshot-trust-host-key";
+            options = [ "NOPASSWD" ];
+          }
+          {
+            command = "${controlVmService}/bin/wechat-vm-service-control";
             options = [ "NOPASSWD" ];
           }
         ];
