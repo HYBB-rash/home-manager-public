@@ -90,6 +90,13 @@
           ./configuration.nix
         ];
       };
+      wechatVmConfiguration = nixpkgs.lib.nixosSystem {
+        inherit system;
+        modules = [
+          "${nixpkgs}/nixos/modules/virtualisation/virtualbox-image.nix"
+          ./vm/wechat-exporter.nix
+        ];
+      };
       homeConfiguration = home-manager.lib.homeManagerConfiguration {
         inherit pkgs;
 
@@ -110,7 +117,10 @@
     in
     {
       nixosConfigurations.nixos = nixosConfiguration;
+      nixosConfigurations.wechat-exporter = wechatVmConfiguration;
       homeConfigurations.user = homeConfiguration;
+
+      packages.${system}.wechat-exporter-vm = wechatVmConfiguration.config.system.build.virtualBoxOVA;
 
       # 开发工具只在进入 `nix develop` 时可用，不写入 Home Manager 环境。
       devShells.${system}.default = pkgs.mkShell {
@@ -125,6 +135,9 @@
       checks.${system} = {
         nixos = nixosConfiguration.config.system.build.toplevel;
         home-manager = homeConfiguration.activationPackage;
+        wechat-snapshot-read-only = pkgs.testers.runNixOSTest (
+          import ./tests/wechat-snapshot.nix { inherit pkgs; }
+        );
       };
 
       formatter.${system} = pkgs.nixfmt;

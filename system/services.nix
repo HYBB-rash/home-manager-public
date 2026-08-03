@@ -17,6 +17,9 @@
   # 为迁移 Windows 微信数据的虚拟机提供 VirtualBox 宿主支持。
   virtualisation.virtualbox.host.enable = true;
 
+  # Pull only completed, integrity-checked VM snapshots into Second User's read-only view.
+  services.wechatSnapshotBridge.enable = true;
+
   # 使用 LXC 在 Plasma Wayland 会话中运行 Android 应用。
   virtualisation.waydroid = {
     enable = true;
