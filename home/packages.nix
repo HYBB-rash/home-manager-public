@@ -5,6 +5,26 @@
   ...
 }:
 
+let
+  # Nixpkgs does not currently package CC Switch. Keep the upstream AppImage
+  # pinned so upgrades remain reviewable and reversible through Home Manager.
+  ccSwitch = pkgs.appimageTools.wrapType2 {
+    pname = "cc-switch";
+    version = "3.19.1";
+
+    src = pkgs.fetchurl {
+      url = "https://github.com/farion1231/cc-switch/releases/download/v3.19.1/CC-Switch-v3.19.1-Linux-x86_64.AppImage";
+      hash = "sha256-GZ298Rw/hPyxIZEYco58IheNQmEI6b1Gl5JLjX0RhJ8=";
+    };
+
+    meta = {
+      description = "Configuration manager for AI coding agents";
+      homepage = "https://github.com/farion1231/cc-switch";
+      mainProgram = "cc-switch";
+      platforms = [ "x86_64-linux" ];
+    };
+  };
+in
 {
   # 只放行由 Home Manager 当前包集直接构建的非自由软件。
   nixpkgs.config.allowUnfreePredicate =
@@ -23,6 +43,7 @@
     pkgsUnstable.vivaldi
     pkgsUnstable.claude-code
     pkgsUnstable.opencode
+    ccSwitch
 
     # 命令行工具
     pkgs.fastfetch
