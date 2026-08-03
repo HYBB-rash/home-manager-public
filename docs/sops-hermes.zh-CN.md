@@ -1,6 +1,6 @@
 # SOPS-Nix Hermes 个性化配置部署
 
-[English](./sops-hermes.md)
+[日常启动与运维手册](./hermes-multiuser-runbook.zh-CN.md) | [English](./sops-hermes.md)
 
 本仓库为每个已配置的普通用户运行一个系统级 Hermes 网关。本地
 `services.hermesMultiUser` 模块使用上游 Hermes 软件包，但不使用其只能运行
