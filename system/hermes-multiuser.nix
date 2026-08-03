@@ -105,7 +105,7 @@ let
                     "0750"
                   ];
                   default = "0640";
-                  description = "Mode after root deploys the stable profile file.";
+                  description = "Mode after deploying the profile file for its instance user.";
                 };
               };
             }
@@ -148,7 +148,6 @@ let
 
       export HOME=${lib.escapeShellArg (instanceHermesHome instance)}
       export HERMES_HOME=${lib.escapeShellArg (instanceHermesHome instance)}
-      export HERMES_MANAGED=true
       export XDG_CACHE_HOME=${lib.escapeShellArg "${instanceHermesHome instance}/cache"}
       export XDG_CONFIG_HOME=${lib.escapeShellArg "${instanceHermesHome instance}/runtime/config"}
       export XDG_STATE_HOME=${lib.escapeShellArg "${instanceHermesHome instance}/runtime"}
@@ -187,7 +186,7 @@ let
         in
         ''
           destination=${lib.escapeShellArg destination}
-          ${pkgs.coreutils}/bin/install -D -o root -g ${lib.escapeShellArg instance.group} -m ${file.mode} \
+          ${pkgs.coreutils}/bin/install -D -o ${lib.escapeShellArg instance.user} -g ${lib.escapeShellArg instance.group} -m ${file.mode} \
             ${lib.escapeShellArg secretPath} "$stage/profile/$destination"
         ''
       ) instance.profile.files;
@@ -199,7 +198,7 @@ let
         if [ -L "$managed_dir" ] || [ -f "$managed_dir" ]; then
           ${pkgs.coreutils}/bin/rm -f -- "$managed_dir"
         fi
-        ${pkgs.coreutils}/bin/install -d -o root -g ${lib.escapeShellArg instance.group} -m 0750 "$managed_dir"
+        ${pkgs.coreutils}/bin/install -d -o ${lib.escapeShellArg instance.user} -g ${lib.escapeShellArg instance.group} -m 0750 "$managed_dir"
       '') profileParentDirectories;
       profileLinks = mapAttrsToList (destination: _: ''
         link=${lib.escapeShellArg "${hermesHome}/${destination}"}
@@ -231,11 +230,11 @@ let
         ${pkgs.coreutils}/bin/install -d -o ${lib.escapeShellArg instance.user} -g ${lib.escapeShellArg instance.group} -m 0700 "$hermes_home/${path}"
       '') runtimeDirectories}
       ${pkgs.coreutils}/bin/install -d -o ${lib.escapeShellArg instance.user} -g ${lib.escapeShellArg instance.group} -m 0700 "$workspace"
-      ${pkgs.coreutils}/bin/install -d -o root -g ${lib.escapeShellArg instance.group} -m 0750 "$stage/profile"
+      ${pkgs.coreutils}/bin/install -d -o ${lib.escapeShellArg instance.user} -g ${lib.escapeShellArg instance.group} -m 0750 "$stage/profile"
 
       ${lib.concatStringsSep "\n" profileFiles}
       ${pkgs.findutils}/bin/find "$stage/profile" -type d \
-        -exec ${pkgs.coreutils}/bin/chown root:${lib.escapeShellArg instance.group} {} + \
+        -exec ${pkgs.coreutils}/bin/chown ${lib.escapeShellArg instance.user}:${lib.escapeShellArg instance.group} {} + \
         -exec ${pkgs.coreutils}/bin/chmod 0750 {} +
 
       previous="$state_dir/profile.previous"

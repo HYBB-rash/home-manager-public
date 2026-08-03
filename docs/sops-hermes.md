@@ -275,11 +275,12 @@ sudo journalctl -u hermes-user.service -u hermes-user2.service -n 50 --no-pager
 
 Each `hermes-<instance>.service` starts under `multi-user.target`; neither
 login nor user lingering is required. The profile deployment units run first as
-root, install stable profile files as `root:hermes-<instance>`, and install the
-dotenv file as the actual user with mode `0600`. The gateway is only wuser2ble
-to its own `HERMES_HOME` and workspace; stable profile targets remain
-root-owned and are restored on every profile deployment. Sessions, runtime
-memories, cache, and logs are intentionally not Git-backed.
+root, then install the profile files and dotenv as the actual instance user.
+That user can edit its own profile through the interactive CLI. A later profile
+deployment restores the SOPS versions, so runtime edits must be sealed back
+into SOPS when they should persist. The gateway is only wuser2ble to its own
+`HERMES_HOME` and workspace. Sessions, runtime memories, cache, and logs are
+intentionally not Git-backed.
 
 Platforms that bind local listeners must use a different port in each user's
 encrypted configuration. In particular, the Hermes defaults for `api_server`,
@@ -312,12 +313,114 @@ Each wrapper verifies the operating-system user, sets that instance's isolated
 executes the Hermes package locked by this flake. It does not use
 `sudo --chdir`/`sudo -D`, so it does not require that sudoers permission.
 
-The wrapper deliberately keeps `HERMES_MANAGED=true`. Commands such as
-`hermes setup`, `hermes config set`, and `hermes gateway setup` therefore must
-not mutate the stable root-managed profile. Make persistent changes through
-`secrets/hermes.yaml` or `system/services.nix`, then rebuild. An interactive
-CLI may run while `hermes-user2.service` continues to manage the background
-message gateway.
+The interactive wrapper intentionally does not set `HERMES_MANAGED`. Commands
+such as `hermes setup`, `hermes config set`, and `hermes gateway setup` may
+modify that user's isolated profile. The unattended systemd gateway still runs
+with `HERMES_MANAGED=true`. An interactive CLI may run while
+`hermes-user2.service` continues to manage the background message gateway.
+
+### Enroll a messaging platform
+
+Hermes' Weixin integration uses Tencent's iLink Bot API and obtains its account
+ID and token through an interactive QR login. Run the platform wizard through
+the instance wrapper:
+
+```fish
+sudo -u user2 /run/current-system/sw/bin/hermes-user2-cli gateway setup
+```
+
+Select **Weixin / WeChat**, scan and confirm the QR code, configure the DM
+policy, then select **Done**. At the two final prompts, answer `n` to both
+starting and installing a gateway service. The Nix-managed
+`hermes-user2.service` is the only background gateway supervisor.
+
+The wizard writes the credentials into Second User's isolated
+`/var/lib/hermes-user2/home/.env`. They work after restarting the existing
+service, but the next profile deployment will restore the SOPS version. Seal
+the updated dotenv file back into the encrypted secret before rebuilding:
+
+```fish
+cd ~/.config/home-manager
+
+set sops_out (nix build --no-link --print-out-paths nixpkgs#sops)
+set sops_bin "$sops_out/bin/sops"
+set jq_out (nix build --no-link --print-out-paths nixpkgs#jq)
+set jq_bin "$jq_out/bin/jq"
+
+sudo -v
+sudo -u user2 "$jq_bin" --raw-input --slurp '.' \
+    /var/lib/hermes-user2/home/.env | \
+    sudo env SOPS_AGE_KEY_FILE=/var/lib/sops-nix/key.txt \
+    "$sops_bin" set --value-stdin \
+    secrets/hermes.yaml '["hermes-user2-env"]'
+
+sudo chown (id -u):(id -g) secrets/hermes.yaml
+chmod 0644 secrets/hermes.yaml
+
+sudo env SOPS_AGE_KEY_FILE=/var/lib/sops-nix/key.txt \
+    "$sops_bin" --decrypt --extract '["hermes-user2-env"]' \
+    secrets/hermes.yaml >/dev/null
+and sudo nixos-rebuild switch --flake .#nixos
+and sudo systemctl restart hermes-user2.service
+```
+
+This pipeline JSON-encodes the dotenv content through standard input; it does
+not place the Weixin token in process arguments or an extra plaintext temporary
+file. Repeat the same workflow with the User wrapper and
+`hermes-user-env` when enrolling User's platform identity. Profile changes
+made by other wuser2ble CLI commands have the same lifecycle: seal the affected
+`config.yaml`, `SOUL.md`, or `USER.md` value using the step 3 helper before the
+next profile deployment if the change should persist.
+
+### Export all wuser2ble profile changes
+
+To review Second User's current profile and write selected changes back manually,
+export the four managed inputs into a private temporary directory. The command
+does not export sessions, memories, cache, logs, or workspace contents:
+
+```fish
+set runtime_export (mktemp -d --tmpdir hermes-user2-export.XXXXXXXX)
+chmod 0700 "$runtime_export"
+
+sudo -v
+sudo install -o (id -u) -g (id -g) -m 0600 \
+    /var/lib/hermes-user2/home/.env "$runtime_export/user2.env"
+sudo install -o (id -u) -g (id -g) -m 0600 \
+    /var/lib/hermes-user2/home/config.yaml "$runtime_export/user2-config.yaml"
+sudo install -o (id -u) -g (id -g) -m 0600 \
+    /var/lib/hermes-user2/home/SOUL.md "$runtime_export/user2-SOUL.md"
+sudo install -o (id -u) -g (id -g) -m 0600 \
+    /var/lib/hermes-user2/home/USER.md "$runtime_export/user2-USER.md"
+
+echo "Second User profile exported to $runtime_export"
+```
+
+Inspect or edit those local files without printing their contents. Recreate the
+step 3 `put_hermes_secret` function if it is no longer present in the current
+Fish session, then write back exactly the values you intend to retain:
+
+```fish
+put_hermes_secret hermes-user2-env "$runtime_export/user2.env"
+put_hermes_secret hermes-user2-config "$runtime_export/user2-config.yaml"
+put_hermes_secret hermes-user2-soul "$runtime_export/user2-SOUL.md"
+put_hermes_secret hermes-user2-user "$runtime_export/user2-USER.md"
+```
+
+Run the SOPS extract validation before rebuilding. Only after every updated key
+decrypts and the rebuilt profile is verified, delete the four plaintext files
+and remove the now-empty export directory:
+
+```fish
+rm "$runtime_export/user2.env" \
+    "$runtime_export/user2-config.yaml" \
+    "$runtime_export/user2-SOUL.md" \
+    "$runtime_export/user2-USER.md"
+rmdir "$runtime_export"
+set -e runtime_export
+```
+
+For User, replace `user2` with `user` in the source paths, destination
+names, and SOPS keys.
 
 ## Updating secrets
 
@@ -339,6 +442,9 @@ all secrets are re-encrypted to the new recipient and a rebuild is verified.
   then repeat the decrypt/extract validation without printing its output.
 - **`sudo` rejects `--chdir` or `-D`:** use the generated per-user CLI wrapper.
   Do not loosen sudoers or manually duplicate the managed environment.
+- **A CLI write says the installation is managed:** rebuild to install the
+  current wrapper and invoke Hermes through that per-user wrapper. The systemd
+  gateway remains managed, but interactive wrapper commands are wuser2ble.
 - **Flake errors:** run `nix flake check` from the repository root first.
 
 ## Security and Git guidance

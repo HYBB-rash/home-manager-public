@@ -263,11 +263,11 @@ sudo journalctl -u hermes-user.service -u hermes-user2.service -n 50 --no-pager
 ```
 
 每个 `hermes-<instance>.service` 都挂载到 `multi-user.target`；不需要用户登录，
-也不需要 user lingering。个性化配置部署单元首先以 root 身份运行，把稳定配置
-文件安装为 `root:hermes-<instance>`，并以实际用户身份、`0600` 权限安装 dotenv
-文件。网关只能写入自己的 `HERMES_HOME` 和 workspace；稳定配置目标保持 root
-所有，并在每次部署个性化配置时恢复。sessions、运行时 memories、cache 和 logs
-有意不纳入 Git。
+也不需要 user lingering。个性化配置部署单元首先以 root 身份运行，然后把配置
+文件和 dotenv 安装为对应实例用户所有。该用户可以通过交互式 CLI 修改自己的
+配置；后续个性化配置部署会恢复 SOPS 中的版本，因此需要长期保留的运行时改动
+必须回存 SOPS。网关只能写入自己的 `HERMES_HOME` 和 workspace。sessions、
+运行时 memories、cache 和 logs 有意不纳入 Git。
 
 任何绑定本地监听端口的平台，都必须为两个用户配置不同端口。尤其是 Hermes 的
 `api_server`、WhatsApp Cloud webhook 和 BlueBubbles webhook 默认设置，不能在
@@ -296,11 +296,106 @@ sudo -u user2 /run/current-system/sw/bin/hermes-user2-cli doctor
 XDG 路径，在包装器内部进入对应 workspace，最后执行此 flake 锁定的 Hermes
 软件包。它不使用 `sudo --chdir`/`sudo -D`，因此不需要相应的 sudoers 权限。
 
-包装器会刻意保留 `HERMES_MANAGED=true`。因此，`hermes setup`、
-`hermes config set` 和 `hermes gateway setup` 等命令不得修改由 root 管理的
-稳定配置。持久修改仍须通过 `secrets/hermes.yaml` 或 `system/services.nix` 完成，
-然后重建系统。交互式 CLI 可以和负责后台消息网关的
-`hermes-user2.service` 同时运行。
+交互式包装器不会设置 `HERMES_MANAGED`。`hermes setup`、`hermes config set`、
+`hermes gateway setup` 等命令都可以修改该用户隔离的个性配置。无人值守的
+systemd gateway 仍然以 `HERMES_MANAGED=true` 运行。交互式 CLI 可以和负责
+后台消息网关的 `hermes-user2.service` 同时运行。
+
+### 注册消息平台
+
+Hermes 的 Weixin 集成通过腾讯 iLink Bot API 工作，并通过交互式扫码取得
+account ID 和令牌。使用对应实例的包装器启动平台向导：
+
+```fish
+sudo -u user2 /run/current-system/sw/bin/hermes-user2-cli gateway setup
+```
+
+选择 **Weixin / WeChat**，扫描并确认二维码，设置私聊策略，然后选择 **Done**。
+向导最后会询问是否立即启动以及是否安装 gateway 服务，这两项都回答 `n`。
+后台网关只能继续由 Nix 管理的 `hermes-user2.service` 托管。
+
+向导会把凭据写入 Second User 隔离的 `/var/lib/hermes-user2/home/.env`。重启现有服务后
+即可使用，但下一次个性化配置部署会恢复 SOPS 中的版本。因此，重建前必须把
+更新后的 dotenv 文件重新封装进加密秘密：
+
+```fish
+cd ~/.config/home-manager
+
+set sops_out (nix build --no-link --print-out-paths nixpkgs#sops)
+set sops_bin "$sops_out/bin/sops"
+set jq_out (nix build --no-link --print-out-paths nixpkgs#jq)
+set jq_bin "$jq_out/bin/jq"
+
+sudo -v
+sudo -u user2 "$jq_bin" --raw-input --slurp '.' \
+    /var/lib/hermes-user2/home/.env | \
+    sudo env SOPS_AGE_KEY_FILE=/var/lib/sops-nix/key.txt \
+    "$sops_bin" set --value-stdin \
+    secrets/hermes.yaml '["hermes-user2-env"]'
+
+sudo chown (id -u):(id -g) secrets/hermes.yaml
+chmod 0644 secrets/hermes.yaml
+
+sudo env SOPS_AGE_KEY_FILE=/var/lib/sops-nix/key.txt \
+    "$sops_bin" --decrypt --extract '["hermes-user2-env"]' \
+    secrets/hermes.yaml >/dev/null
+and sudo nixos-rebuild switch --flake .#nixos
+and sudo systemctl restart hermes-user2.service
+```
+
+这条管道通过标准输入把 dotenv 内容编码为 JSON 字符串，不会把微信令牌放入
+进程参数，也不会生成额外的明文临时文件。为 User 注册平台身份时，改用
+User 的包装器以及 `hermes-user-env`，其余流程相同。其他可写 CLI 命令对
+`config.yaml`、`SOUL.md` 或 `USER.md` 所做的改动也遵循同样生命周期：如果需要
+在下一次个性化配置部署后继续保留，应在部署前使用第 3 步函数回存对应 SOPS 值。
+
+### 导出全部可写个性配置
+
+如需检查 Second User 当前配置并手工选择要写回的改动，可以把四项托管输入导出到
+权限受限的临时目录。以下命令不会导出 sessions、memories、cache、logs 或
+workspace 内容：
+
+```fish
+set runtime_export (mktemp -d --tmpdir hermes-user2-export.XXXXXXXX)
+chmod 0700 "$runtime_export"
+
+sudo -v
+sudo install -o (id -u) -g (id -g) -m 0600 \
+    /var/lib/hermes-user2/home/.env "$runtime_export/user2.env"
+sudo install -o (id -u) -g (id -g) -m 0600 \
+    /var/lib/hermes-user2/home/config.yaml "$runtime_export/user2-config.yaml"
+sudo install -o (id -u) -g (id -g) -m 0600 \
+    /var/lib/hermes-user2/home/SOUL.md "$runtime_export/user2-SOUL.md"
+sudo install -o (id -u) -g (id -g) -m 0600 \
+    /var/lib/hermes-user2/home/USER.md "$runtime_export/user2-USER.md"
+
+echo "Second User profile exported to $runtime_export"
+```
+
+检查或编辑这些本地文件时，不要把内容打印到终端。如果当前 Fish 会话已经没有
+第 3 步定义的 `put_hermes_secret` 函数，先重新执行其定义，然后只写回你希望
+长期保留的值：
+
+```fish
+put_hermes_secret hermes-user2-env "$runtime_export/user2.env"
+put_hermes_secret hermes-user2-config "$runtime_export/user2-config.yaml"
+put_hermes_secret hermes-user2-soul "$runtime_export/user2-SOUL.md"
+put_hermes_secret hermes-user2-user "$runtime_export/user2-USER.md"
+```
+
+重建前先执行 SOPS extract 验证。只有全部更新键均可解密且重建后的配置验证通过，
+才能删除四个明文文件并移除已经为空的导出目录：
+
+```fish
+rm "$runtime_export/user2.env" \
+    "$runtime_export/user2-config.yaml" \
+    "$runtime_export/user2-SOUL.md" \
+    "$runtime_export/user2-USER.md"
+rmdir "$runtime_export"
+set -e runtime_export
+```
+
+导出 User 时，把源路径、目标文件名和 SOPS 键中的 `user2` 全部替换为 `user`。
 
 ## 更新秘密配置
 
@@ -321,6 +416,8 @@ XDG 路径，在包装器内部进入对应 workspace，最后执行此 flake �
   decrypt/extract 验证，但不要打印验证输出。
 - **`sudo` 拒绝 `--chdir` 或 `-D`：** 使用自动生成的每用户 CLI 包装器。不要
   放宽 sudoers，也不要手工复制托管环境变量。
+- **CLI 写入提示安装由系统管理：** 先重建以安装当前包装器，并通过对应的
+  每用户包装器调用 Hermes。systemd gateway 仍为托管模式，但交互式包装器可写。
 - **Flake 错误：** 先从仓库根目录运行 `nix flake check`。
 
 ## 安全与 Git 指引
