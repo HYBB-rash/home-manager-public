@@ -1,5 +1,7 @@
 # SOPS-Nix Hermes profile setup
 
+[简体中文](./sops-hermes.zh-CN.md)
+
 This repository runs one system Hermes gateway per configured normal user. The
 local `services.hermesMultiUser` module uses the upstream Hermes package, but
 does not use its singleton NixOS service module. Each gateway has a distinct
