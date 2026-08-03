@@ -288,6 +288,37 @@ in both instances at the same time. Telegram polling, Discord gateways, and
 Slack socket mode do not share those listener ports, but still require distinct
 per-user bot or app identities.
 
+## Interactive CLI
+
+The systemd gateway and an interactive Hermes session are separate entry
+points. After rebuilding, use the generated wrapper for the intended operating
+system user:
+
+```fish
+sudo -u user /run/current-system/sw/bin/hermes-user-cli --tui
+sudo -u user2 /run/current-system/sw/bin/hermes-user2-cli --tui
+```
+
+Use `--cli` for the classic CLI. These commands inspect the effective
+configuration and run diagnostics without starting a second gateway:
+
+```fish
+sudo -u user2 /run/current-system/sw/bin/hermes-user2-cli config
+sudo -u user2 /run/current-system/sw/bin/hermes-user2-cli doctor
+```
+
+Each wrapper verifies the operating-system user, sets that instance's isolated
+`HOME`, `HERMES_HOME`, and XDG paths, changes to its workspace internally, and
+executes the Hermes package locked by this flake. It does not use
+`sudo --chdir`/`sudo -D`, so it does not require that sudoers permission.
+
+The wrapper deliberately keeps `HERMES_MANAGED=true`. Commands such as
+`hermes setup`, `hermes config set`, and `hermes gateway setup` therefore must
+not mutate the stable root-managed profile. Make persistent changes through
+`secrets/hermes.yaml` or `system/services.nix`, then rebuild. An interactive
+CLI may run while `hermes-user2.service` continues to manage the background
+message gateway.
+
 ## Updating secrets
 
 Edit with the step 3 command, validate, then run the rebuild again. Do not
@@ -306,6 +337,8 @@ all secrets are re-encrypted to the new recipient and a rebuild is verified.
   replace the module's ownership modes to bypass this check.
 - **Missing variables at runtime:** inspect `systemctl status` and the journal,
   then repeat the decrypt/extract validation without printing its output.
+- **`sudo` rejects `--chdir` or `-D`:** use the generated per-user CLI wrapper.
+  Do not loosen sudoers or manually duplicate the managed environment.
 - **Flake errors:** run `nix flake check` from the repository root first.
 
 ## Security and Git guidance

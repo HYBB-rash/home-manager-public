@@ -134,6 +134,29 @@ let
   profileUnitName = name: "hermes-profile-${name}";
   serviceUnitName = name: "hermes-${name}";
 
+  cliPackage =
+    name: instance:
+    pkgs.writeShellScriptBin "hermes-${name}-cli" ''
+      set -euo pipefail
+
+      expected_user=${lib.escapeShellArg instance.user}
+      actual_user="$(${pkgs.coreutils}/bin/id -un)"
+      if [ "$actual_user" != "$expected_user" ]; then
+        echo "This Hermes CLI wrapper must run as $expected_user (current user: $actual_user)." >&2
+        exit 1
+      fi
+
+      export HOME=${lib.escapeShellArg (instanceHermesHome instance)}
+      export HERMES_HOME=${lib.escapeShellArg (instanceHermesHome instance)}
+      export HERMES_MANAGED=true
+      export XDG_CACHE_HOME=${lib.escapeShellArg "${instanceHermesHome instance}/cache"}
+      export XDG_CONFIG_HOME=${lib.escapeShellArg "${instanceHermesHome instance}/runtime/config"}
+      export XDG_STATE_HOME=${lib.escapeShellArg "${instanceHermesHome instance}/runtime"}
+
+      cd ${lib.escapeShellArg (instanceWorkspace instance)}
+      exec ${lib.escapeShellArg "${cfg.package}/bin/hermes"} "$@"
+    '';
+
   runtimeDirectories = [
     "cache"
     "cron"
@@ -328,6 +351,8 @@ in
     );
 
     sops.secrets = sopsSecrets;
+
+    environment.systemPackages = mapAttrsToList cliPackage enabledInstances;
 
     systemd.services =
       (lib.mapAttrs' (

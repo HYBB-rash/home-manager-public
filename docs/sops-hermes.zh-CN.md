@@ -274,6 +274,34 @@ sudo journalctl -u hermes-user.service -u hermes-user2.service -n 50 --no-pager
 两个实例中原样同时启用。Telegram 轮询、Discord 网关和 Slack socket mode
 不共享这些监听端口，但仍然必须使用每个用户各自独立的机器人或应用身份。
 
+## 交互式 CLI
+
+systemd 后台网关和 Hermes 交互会话是两个独立入口。完成系统重建后，以目标
+操作系统用户运行自动生成的包装器：
+
+```fish
+sudo -u user /run/current-system/sw/bin/hermes-user-cli --tui
+sudo -u user2 /run/current-system/sw/bin/hermes-user2-cli --tui
+```
+
+经典 CLI 使用 `--cli`。以下命令可以查看最终生效的配置和运行诊断，不会启动
+第二个后台网关：
+
+```fish
+sudo -u user2 /run/current-system/sw/bin/hermes-user2-cli config
+sudo -u user2 /run/current-system/sw/bin/hermes-user2-cli doctor
+```
+
+每个包装器都会检查操作系统用户，设置该实例隔离的 `HOME`、`HERMES_HOME` 和
+XDG 路径，在包装器内部进入对应 workspace，最后执行此 flake 锁定的 Hermes
+软件包。它不使用 `sudo --chdir`/`sudo -D`，因此不需要相应的 sudoers 权限。
+
+包装器会刻意保留 `HERMES_MANAGED=true`。因此，`hermes setup`、
+`hermes config set` 和 `hermes gateway setup` 等命令不得修改由 root 管理的
+稳定配置。持久修改仍须通过 `secrets/hermes.yaml` 或 `system/services.nix` 完成，
+然后重建系统。交互式 CLI 可以和负责后台消息网关的
+`hermes-user2.service` 同时运行。
+
 ## 更新秘密配置
 
 使用第 3 步的命令进行编辑，完成验证后再次重建。不要手工编辑 SOPS 密文。
@@ -291,6 +319,8 @@ sudo journalctl -u hermes-user.service -u hermes-user2.service -n 50 --no-pager
   虚假密文，也不要修改模块的所有权模式来绕过检查。
 - **运行时缺少变量：** 检查 `systemctl status` 和日志，然后重新执行
   decrypt/extract 验证，但不要打印验证输出。
+- **`sudo` 拒绝 `--chdir` 或 `-D`：** 使用自动生成的每用户 CLI 包装器。不要
+  放宽 sudoers，也不要手工复制托管环境变量。
 - **Flake 错误：** 先从仓库根目录运行 `nix flake check`。
 
 ## 安全与 Git 指引
