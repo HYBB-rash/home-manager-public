@@ -106,7 +106,8 @@ The initial two-instance mapping is:
 
 ```yaml
 hermes-user-env: |
-  HERMES_API_KEY=REPLACE_WITH_PROVIDER_TOKEN
+  DEEPSEEK_API_KEY=REPLACE_WITH_SHARED_PROVIDER_TOKEN
+  TELEGRAM_BOT_TOKEN=REPLACE_WITH_USER_A_BOT_TOKEN
 hermes-user-config: |
   # Hermes YAML configuration for this user only
 hermes-user-soul: |
@@ -114,13 +115,82 @@ hermes-user-soul: |
 hermes-user-user: |
   # User context for this user only
 hermes-user2-env: |
-  HERMES_API_KEY=REPLACE_WITH_PROVIDER_TOKEN
+  DEEPSEEK_API_KEY=REPLACE_WITH_SHARED_PROVIDER_TOKEN
+  TELEGRAM_BOT_TOKEN=REPLACE_WITH_USER_B_BOT_TOKEN
 hermes-user2-config: |
   # Hermes YAML configuration for this user only
 hermes-user2-soul: |
   # Persona for this user only
 hermes-user2-user: |
   # User context for this user only
+```
+
+The two dotenv values may contain the same `DEEPSEEK_API_KEY`. Every messaging
+credential, including Telegram, Discord, Slack, and any other platform token or
+OAuth material, must identify that user only. Do not reuse a bot or app token
+between the two instances.
+
+When the eight values already exist as separate plaintext files in a protected
+runtime directory such as `$draft`, encode each entire file as one JSON string
+before passing it to `sops set`. SOPS 3.13 requires the value read by `set` to
+be valid JSON. `--value-file` does not JSON-encode dotenv, YAML, or Markdown
+text, so using it directly fails with `Value for --set is not valid JSON`.
+
+Authenticate `sudo` before constructing the pipeline. Keep the encoded value on
+standard input: do not put it in a command argument or write an intermediate
+JSON file. Bash:
+
+```bash
+set -euo pipefail
+sops_bin=$(nix shell nixpkgs#sops --command which sops)
+jq_bin=$(nix shell nixpkgs#jq --command which jq)
+sudo -v
+
+put_hermes_secret() {
+  local key=$1 source=$2
+  "$jq_bin" --raw-input --slurp '.' "$source" |
+    sudo env SOPS_AGE_KEY_FILE=/var/lib/sops-nix/key.txt \
+      "$sops_bin" set --value-stdin secrets/hermes.yaml "[\"$key\"]"
+}
+
+put_hermes_secret hermes-user-env    "$draft/user.env"
+put_hermes_secret hermes-user-config "$draft/user-config.yaml"
+put_hermes_secret hermes-user-soul   "$draft/user-SOUL.md"
+put_hermes_secret hermes-user-user   "$draft/user-USER.md"
+put_hermes_secret hermes-user2-env      "$draft/user2.env"
+put_hermes_secret hermes-user2-config   "$draft/user2-config.yaml"
+put_hermes_secret hermes-user2-soul     "$draft/user2-SOUL.md"
+put_hermes_secret hermes-user2-user     "$draft/user2-USER.md"
+unset -f put_hermes_secret
+sudo chown "$(id -u):$(id -g)" secrets/hermes.yaml
+chmod 0644 secrets/hermes.yaml
+```
+
+Fish:
+
+```fish
+set sops_bin (nix shell nixpkgs#sops --command which sops)
+set jq_bin (nix shell nixpkgs#jq --command which jq)
+sudo -v
+
+function put_hermes_secret --argument-names key source
+    "$jq_bin" --raw-input --slurp '.' "$source" | \
+        sudo env SOPS_AGE_KEY_FILE=/var/lib/sops-nix/key.txt \
+        "$sops_bin" set --value-stdin \
+        secrets/hermes.yaml "[\"$key\"]"
+end
+
+put_hermes_secret hermes-user-env    "$draft/user.env"
+put_hermes_secret hermes-user-config "$draft/user-config.yaml"
+put_hermes_secret hermes-user-soul   "$draft/user-SOUL.md"
+put_hermes_secret hermes-user-user   "$draft/user-USER.md"
+put_hermes_secret hermes-user2-env      "$draft/user2.env"
+put_hermes_secret hermes-user2-config   "$draft/user2-config.yaml"
+put_hermes_secret hermes-user2-soul     "$draft/user2-SOUL.md"
+put_hermes_secret hermes-user2-user     "$draft/user2-USER.md"
+functions -e put_hermes_secret
+sudo chown (id -u):(id -g) secrets/hermes.yaml
+chmod 0644 secrets/hermes.yaml
 ```
 
 To add stable skills, plugins, tool settings, or platform configuration, add
@@ -137,28 +207,59 @@ export.
 
 ## 4. Validate
 
-Validate every configured key without printing plaintext:
+Validate all eight configured keys without printing plaintext. A successful
+write of only some values is not sufficient.
 
 ```bash
-sops_bin=$(nix shell nixpkgs#sops nixpkgs#age --command which sops)
-sudo env \
-  SOPS_AGE_KEY_FILE=/var/lib/sops-nix/key.txt \
-  "$sops_bin" --decrypt --extract 'hermes-user-env' secrets/hermes.yaml >/dev/null
-sudo env \
-  SOPS_AGE_KEY_FILE=/var/lib/sops-nix/key.txt \
-  "$sops_bin" --decrypt --extract 'hermes-user2-env' secrets/hermes.yaml >/dev/null
-nix flake check
+sops_bin=$(nix shell nixpkgs#sops --command which sops)
+hermes_keys=(
+  hermes-user-env hermes-user-config hermes-user-soul hermes-user-user
+  hermes-user2-env hermes-user2-config hermes-user2-soul hermes-user2-user
+)
+sudo -v
+for key in "${hermes_keys[@]}"; do
+  sudo env SOPS_AGE_KEY_FILE=/var/lib/sops-nix/key.txt \
+    "$sops_bin" --decrypt --extract "[\"$key\"]" \
+    secrets/hermes.yaml >/dev/null || exit 1
+done
+echo 'SOPS validation passed: all eight values exist and decrypt'
 ```
 
 ```fish
-set sops_bin (nix shell nixpkgs#sops nixpkgs#age --command which sops)
-sudo env \
-  SOPS_AGE_KEY_FILE=/var/lib/sops-nix/key.txt \
-  "$sops_bin" --decrypt --extract 'hermes-user-env' secrets/hermes.yaml >/dev/null
-sudo env \
-  SOPS_AGE_KEY_FILE=/var/lib/sops-nix/key.txt \
-  "$sops_bin" --decrypt --extract 'hermes-user2-env' secrets/hermes.yaml >/dev/null
-nix flake check
+set sops_bin (nix shell nixpkgs#sops --command which sops)
+set hermes_keys \
+    hermes-user-env hermes-user-config \
+    hermes-user-soul hermes-user-user \
+    hermes-user2-env hermes-user2-config \
+    hermes-user2-soul hermes-user2-user
+set validation_failed 0
+sudo -v
+for key in $hermes_keys
+    sudo env SOPS_AGE_KEY_FILE=/var/lib/sops-nix/key.txt \
+        "$sops_bin" --decrypt --extract "[\"$key\"]" \
+        secrets/hermes.yaml >/dev/null
+    or begin
+        echo "Validation failed: $key"
+        set validation_failed 1
+        break
+    end
+end
+if test $validation_failed -eq 0
+    echo 'SOPS validation passed: all eight values exist and decrypt'
+end
+```
+
+Only after all eight values pass validation may you delete the plaintext
+`$draft` directory, remove the temporary `sops.validateSopsFiles = false` line
+and its explanatory comment from `system/services.nix`, and proceed. If any key
+fails, stop: keep strict validation disabled only while correcting the encrypted
+file, and do not rebuild the system.
+
+After removing the temporary setting, run:
+
+```bash
+nix flake check --no-write-lock-file
+sudo nixos-rebuild dry-activate --flake .#nixos
 ```
 
 ## 5. Apply
