@@ -328,9 +328,22 @@ in
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
-        User = "user";
-        Group = "vboxusers";
-        Environment = "HOME=/home/user";
+        # VirtualBox 7.2's hardened vboxdrv rejects its system device for
+        # non-root callers, regardless of the vboxusers device-node mode.
+        # Keep the established VM registry while opening the driver as root.
+        User = "root";
+        Group = "root";
+        Environment = [
+          "HOME=/home/user"
+          "VBOX_USER_HOME=/home/user/.config/VirtualBox"
+        ];
+        # Keep the root service's device access limited to the VirtualBox driver
+        # nodes needed by VBoxHeadless.
+        DevicePolicy = "closed";
+        DeviceAllow = [
+          "/dev/vboxdrv rw"
+          "/dev/vboxdrvu rw"
+        ];
         ExecCondition = "${pkgs.virtualbox}/bin/VBoxManage showvminfo ${cfg.vmName}";
         ExecStart = "${pkgs.virtualbox}/bin/VBoxManage startvm ${cfg.vmName} --type headless";
         ExecStop = "${pkgs.virtualbox}/bin/VBoxManage controlvm ${cfg.vmName} acpipowerbutton";
