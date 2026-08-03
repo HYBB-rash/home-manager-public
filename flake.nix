@@ -14,6 +14,12 @@
 
     nix-flatpak.url = "github:gmodena/nix-flatpak/main";
 
+    cc-switch-cli = {
+      # Upstream CLI replacement for the previously packaged CC Switch AppImage.
+      url = "github:SaladDay/cc-switch-cli/v5.10.0";
+      inputs.nixpkgs.follows = "nixpkgs-unstable";
+    };
+
     agent-learning = {
       url = "path:/home/user/Agent/home-manager";
       flake = false;
@@ -41,6 +47,7 @@
       codex-desktop-linux,
       hermes-agent,
       nix-flatpak,
+      cc-switch-cli,
       agent-learning,
       ...
     }:
@@ -80,6 +87,7 @@
         # 将 unstable 包集注入 home/ 下各模块的参数。
         extraSpecialArgs = {
           inherit pkgsUnstable;
+          ccSwitchCli = cc-switch-cli.packages.${system}.default;
           inherit codexDesktopBundle;
         };
 

@@ -13,6 +13,27 @@
         "type": "path"
       }
     },
+    "cc-switch-cli": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs-unstable"
+        ]
+      },
+      "locked": {
+        "lastModified": 1785666927,
+        "narHash": "sha256-nmLPgNRCVRnd/q03pTplKVTo844WyrRCqLRmz9ymyWE=",
+        "owner": "SaladDay",
+        "repo": "cc-switch-cli",
+        "rev": "ce7e9d61baca608a4831c7a59531c830a03dab87",
+        "type": "github"
+      },
+      "original": {
+        "owner": "SaladDay",
+        "ref": "v5.10.0",
+        "repo": "cc-switch-cli",
+        "type": "github"
+      }
+    },
     "codex-desktop-linux": {
       "inputs": {
         "flake-utils": "flake-utils",
@@ -271,6 +292,7 @@
     "root": {
       "inputs": {
         "agent-learning": "agent-learning",
+        "cc-switch-cli": "cc-switch-cli",
         "codex-desktop-linux": "codex-desktop-linux",
         "hermes-agent": "hermes-agent",
         "home-manager": "home-manager",
