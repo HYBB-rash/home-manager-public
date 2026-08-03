@@ -15,4 +15,16 @@
     ];
     shell = pkgs.fish;
   };
+
+  security.sudo.extraRules = [
+    {
+      users = [ "user" ];
+      commands = [
+        {
+          command = "/run/current-system/sw/bin/podman";
+          options = [ "NOPASSWD" ];
+        }
+      ];
+    }
+  ];
 }
