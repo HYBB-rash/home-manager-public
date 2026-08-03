@@ -334,8 +334,8 @@ in
         name: instance:
         nameValuePair (profileUnitName name) {
           description = "Deploy the stable encrypted profile for Hermes ${name}";
-          requires = [ "sops-install-secrets.service" ];
-          after = [ "sops-install-secrets.service" ];
+          requires = lib.optional config.sops.useSystemdActivation "sops-install-secrets.service";
+          after = lib.optional config.sops.useSystemdActivation "sops-install-secrets.service";
           before = [ "${serviceUnitName name}.service" ];
           serviceConfig = {
             Type = "oneshot";
