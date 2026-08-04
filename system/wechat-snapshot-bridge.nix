@@ -233,11 +233,11 @@ let
     text = ''
       set -euo pipefail
       if [ "$#" -eq 1 ] && [ "$1" = status ]; then
-        exec ${pkgs.python3}/bin/python3 ${./wechat-user2-release-status.py} \
+        exec ${pkgs.python3}/bin/python3 ${./wechat-release-status.py} \
           --root ${lib.escapeShellArg cfg.destination} status
       fi
       if [ "$#" -eq 2 ] && [ "$1" = verify-project ]; then
-        exec ${pkgs.python3}/bin/python3 ${./wechat-user2-release-status.py} \
+        exec ${pkgs.python3}/bin/python3 ${./wechat-release-status.py} \
           --root ${lib.escapeShellArg cfg.destination} verify-project "$2"
       fi
       echo "usage: wechat-user2-release-status {status|verify-project RELEASE}" >&2

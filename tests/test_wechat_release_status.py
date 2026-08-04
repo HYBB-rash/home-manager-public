@@ -9,11 +9,11 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 MODULE_PATH = pathlib.Path(os.environ.get(
-    "WECHAT_RITA_RELEASE_STATUS_MODULE",
-    ROOT / "system" / "wechat-user2-release-status.py",
+    "WECHAT_RELEASE_STATUS_MODULE",
+    ROOT / "system" / "wechat-release-status.py",
 ))
 SPEC = importlib.util.spec_from_file_location(
-    "wechat_user2_release_status", MODULE_PATH
+    "wechat_release_status", MODULE_PATH
 )
 MODULE = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None

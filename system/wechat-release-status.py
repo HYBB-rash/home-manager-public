@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only verification for root-owned Second User WeChat release selectors."""
+"""Read-only verification for the root-owned WeChat consumer releases."""
 
 from __future__ import annotations
 

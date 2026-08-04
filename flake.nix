@@ -156,10 +156,10 @@
             ''
               export WECHAT_ZERO_TOUCH_MODULE=${./system/wechat-zero-touch.py}
               export WECHAT_CRON_RECONCILE_MODULE=${./system/wechat-cron-reconcile.py}
-              export WECHAT_RITA_RELEASE_STATUS_MODULE=${./system/wechat-user2-release-status.py}
+              export WECHAT_RELEASE_STATUS_MODULE=${./system/wechat-release-status.py}
               python3 ${./tests/test_wechat_zero_touch.py}
               python3 ${./tests/test_wechat_cron_reconcile.py}
-              python3 ${./tests/test_wechat_user2_release_status.py}
+              python3 ${./tests/test_wechat_release_status.py}
               touch "$out"
             '';
         wechat-exporter-lan-firewall =
