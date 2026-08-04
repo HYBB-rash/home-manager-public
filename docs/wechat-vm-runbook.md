@@ -52,6 +52,10 @@ Second User 的 Hermes cron 只运行快照消费者。受管发布拥有的作�
 `WECHAT_SNAPSHOT_DB`。`WX_PROJECT_DIR` 指向只读 consumer bundle，只用于读取其
 README/manifest，绝不是数据源。
 
+Hermes cron 配置中的 `script` 字段只保存 `wechat-zt-daily-digest.sh` 这个单一文件名；
+编排器会先在 `$HERMES_HOME/scripts` 下解析并验证对应文件是物理普通文件，再调用
+Hermes CLI。绝对路径、子目录、`..` 和符号链接都会被拒绝。
+
 应用宿主机配置并重启 `hermes-user2.service` 后，可以使用下列命令在该服务的
 实际 mount namespace 中做非内容验证：它只检查固定路径是否可读、不可写，不打开或查询数据库。
 

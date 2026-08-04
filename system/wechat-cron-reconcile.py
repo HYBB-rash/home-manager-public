@@ -173,11 +173,12 @@ def load_desired(
         workdir = row.get("workdir") or None
         if not all(isinstance(value, str) and value for value in (schedule, deliver, script)):
             raise CronReconcileError(f"managed job fields are incomplete: {logical_name}")
-        script_path = pathlib.Path(script)
-        if not script_path.is_absolute():
+        script_name = pathlib.PurePath(script)
+        if script_name.is_absolute() or len(script_name.parts) != 1 or script_name.name != script:
             raise CronReconcileError(
-                f"managed script path must be absolute: {logical_name}"
+                f"managed script must be a single filename: {logical_name}"
             )
+        script_path = root / script
         try:
             resolved = script_path.resolve(strict=True)
             resolved.relative_to(root)
@@ -198,7 +199,7 @@ def load_desired(
             name=name,
             schedule=schedule,
             deliver=deliver,
-            script=str(script_path),
+            script=script,
             workdir=workdir,
         )
     return result

@@ -225,6 +225,12 @@ class ZeroTouchTransactionTest(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
+    def test_desired_cron_uses_hermes_script_basename(self):
+        state = MODULE.desired_cron(fake_release(self.base), self.args)
+        self.assertEqual(
+            state["jobs"][0]["script"], "wechat-zt-daily-digest.sh"
+        )
+
     @mock.patch.object(MODULE.shutil, "chown", autospec=True)
     @mock.patch.object(MODULE, "freeze_artifacts")
     @mock.patch.object(MODULE, "validate_release")

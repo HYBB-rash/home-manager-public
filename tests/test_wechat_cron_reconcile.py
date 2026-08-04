@@ -24,7 +24,7 @@ sys.modules[SPEC.name] = MODULE
 SPEC.loader.exec_module(MODULE)
 
 
-def desired(logical_name="daily-digest", schedule="0 8 * * *", script="/tmp/job.py"):
+def desired(logical_name="daily-digest", schedule="0 8 * * *", script="job.py"):
     return MODULE.DesiredJob(
         logical_name=logical_name,
         name=f"wechat-zt:{logical_name}",
@@ -159,19 +159,23 @@ class CronReconcileTest(unittest.TestCase):
             )
 
     def test_hermes_create_accepts_prefixed_output_and_verifies_jobs_file(self):
-        wanted = desired(script=str(self.base / "job.py"))
+        wanted = desired()
         write_jobs(self.jobs_path, [])
         client = MODULE.HermesCron(pathlib.Path("/bin/false"), self.jobs_path)
+        calls = []
 
-        def fake_run(*_args):
+        def fake_run(*args):
+            calls.append(args)
             write_jobs(self.jobs_path, [actual("job42", wanted)])
             return "(^_^)b Created job: job42\n"
 
         with mock.patch.object(client, "run", side_effect=fake_run):
             self.assertEqual(client.create(wanted), "job42")
+        self.assertIn("job.py", calls[0])
+        self.assertNotIn("/tmp/job.py", calls[0])
 
     def test_hermes_create_recovers_unique_matching_job_without_receipt(self):
-        wanted = desired(script=str(self.base / "job.py"))
+        wanted = desired()
         write_jobs(self.jobs_path, [])
         client = MODULE.HermesCron(pathlib.Path("/bin/false"), self.jobs_path)
 
@@ -231,7 +235,7 @@ class CronReconcileTest(unittest.TestCase):
                     "name": "wechat-zt:daily-digest",
                     "schedule": "0 8 * * *",
                     "deliver": "origin",
-                    "script": str(link),
+                    "script": "job.py",
                     "no_agent": True,
                 }
             ],
@@ -241,9 +245,55 @@ class CronReconcileTest(unittest.TestCase):
         with self.assertRaisesRegex(MODULE.CronReconcileError, "escapes"):
             MODULE.load_desired(path, "wechat-zt:", scripts)
 
+    def test_load_desired_rejects_absolute_or_nested_script_name(self):
+        scripts = self.base / "scripts"
+        scripts.mkdir()
+        (scripts / "job.py").write_text("pass\n", encoding="utf-8")
+        path = self.base / "desired.json"
+        row = {
+            "logical_name": "daily-digest",
+            "name": "wechat-zt:daily-digest",
+            "schedule": "0 8 * * *",
+            "deliver": "origin",
+            "script": "/tmp/job.py",
+            "no_agent": True,
+        }
+        for invalid in ("/tmp/job.py", "nested/job.py", "../job.py"):
+            row["script"] = invalid
+            path.write_text(
+                json.dumps({"version": 1, "jobs": [row]}), encoding="utf-8"
+            )
+            with self.assertRaisesRegex(
+                MODULE.CronReconcileError, "single filename"
+            ):
+                MODULE.load_desired(path, "wechat-zt:", scripts)
+
+    def test_load_desired_validates_file_but_keeps_hermes_basename(self):
+        scripts = self.base / "scripts"
+        scripts.mkdir()
+        (scripts / "job.py").write_text("pass\n", encoding="utf-8")
+        path = self.base / "desired.json"
+        path.write_text(
+            json.dumps({
+                "version": 1,
+                "jobs": [{
+                    "logical_name": "daily-digest",
+                    "name": "wechat-zt:daily-digest",
+                    "schedule": "0 8 * * *",
+                    "deliver": "origin",
+                    "script": "job.py",
+                    "no_agent": True,
+                }],
+            }),
+            encoding="utf-8",
+        )
+
+        loaded = MODULE.load_desired(path, "wechat-zt:", scripts)
+        self.assertEqual(loaded["daily-digest"].script, "job.py")
+
     def test_create_and_inventory_are_idempotent(self):
         write_jobs(self.jobs_path, [])
-        wanted = desired(script=str(self.base / "job.py"))
+        wanted = desired()
         client = FakeHermes(self.jobs_path)
         plan = MODULE.reconcile(
             {wanted.logical_name: wanted},
@@ -268,8 +318,8 @@ class CronReconcileTest(unittest.TestCase):
         self.assertEqual(client.calls, ["create"])
 
     def test_edit_failure_preserves_old_job_and_inventory(self):
-        old = desired(schedule="0 7 * * *", script=str(self.base / "job.py"))
-        new = desired(schedule="0 8 * * *", script=str(self.base / "job.py"))
+        old = desired(schedule="0 7 * * *")
+        new = desired(schedule="0 8 * * *")
         write_jobs(self.jobs_path, [actual("job1", old)])
         inventory = self.inventory(old.logical_name, "job1", old)
         MODULE._write_inventory(self.inventory_path, "wechat-zt:", inventory)
@@ -292,8 +342,8 @@ class CronReconcileTest(unittest.TestCase):
         )
 
     def test_later_failure_rolls_back_created_job(self):
-        first = desired("daily-digest", script=str(self.base / "daily.py"))
-        second = desired("quarterly-digest", script=str(self.base / "quarter.py"))
+        first = desired("daily-digest", script="daily.py")
+        second = desired("quarterly-digest", script="quarter.py")
         write_jobs(self.jobs_path, [])
 
         class FailSecondCreate(FakeHermes):
