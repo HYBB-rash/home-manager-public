@@ -50,18 +50,22 @@ let
     scanned="$(${pkgs.coreutils}/bin/mktemp ${statePath}/scanned-key.XXXXXX)"
     trap '${pkgs.coreutils}/bin/rm -f -- "$stage" "$scanned"' EXIT
     ${pkgs.coreutils}/bin/cat >"$scanned"
-    [ "$(${pkgs.coreutils}/bin/wc -l <"$scanned")" -eq 1 ] || {
-      echo "expected exactly one scanned SSH host key" >&2
+    # ssh-keyscan writes an informational banner as a comment before the
+    # actual record. Count only syntactically complete ED25519 key records.
+    ${pkgs.gawk}/bin/awk '$1 !~ /^#/ && NF == 3 && $2 == "ssh-ed25519" { print }' \
+      "$scanned" >"$stage"
+    [ "$(${pkgs.coreutils}/bin/wc -l <"$stage")" -eq 1 ] || {
+      echo "expected exactly one scanned ED25519 SSH host key" >&2
       exit 1
     }
-    ${pkgs.gawk}/bin/awk 'NF >= 3 { print "wechat-exporter-vm", $2, $3 }' "$scanned" >"$stage"
     actual="$(${pkgs.openssh}/bin/ssh-keygen -lf "$stage" -E sha256 | ${pkgs.gawk}/bin/awk '{print $2}')"
     [ "$actual" = "$expected" ] || {
       echo "SSH host fingerprint mismatch: expected $expected, observed $actual" >&2
       exit 1
     }
+    ${pkgs.gawk}/bin/awk '{ print "wechat-exporter-vm", $2, $3 }' "$stage" >"$scanned"
     ${pkgs.coreutils}/bin/install -o root -g vboxusers -m 0640 \
-      "$stage" ${statePath}/known_hosts
+      "$scanned" ${statePath}/known_hosts
   '';
 
   configureVm = pkgs.writeShellApplication {
