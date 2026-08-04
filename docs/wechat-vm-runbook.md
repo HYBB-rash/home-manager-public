@@ -45,9 +45,10 @@ python3 "$HERMES_HOME/skills/wechat-daily/scripts/daily_report.py" \
 的 `wechat-snapshot-pull.timer` 每分钟验证并拉取完成快照。不要在 Hermes cron 中重跑
 `sync.py`、扫描 VM 的 `published_*.db`，或让 Second User 访问 `/home/user`。
 
-Second User 的 Hermes cron 只运行快照消费者。`$HERMES_HOME/scripts/wechat_snapshot_feed.py`
-从 `WECHAT_SNAPSHOT_DB` 以 immutable 只读方式生成 15 分钟或 24 小时 feed；每日模式将
-公众号编号索引写入 Second User 私有的 `runtime/wechat_daily_brief_items.json`。
+Second User 的 Hermes cron 只运行快照消费者。`$HERMES_HOME/scripts/wechat_quarterly_feed.py`
+和 `$HERMES_HOME/scripts/wechat_daily_feed.py` 分别以固定模式从
+`WECHAT_SNAPSHOT_DB` 生成 15 分钟或 24 小时 feed；每日模式将公众号编号索引写入 Second User
+私有的 `runtime/wechat_daily_brief_items.json`。
 `wechat_brief_search.py` 只查询该索引，不重新读取数据库。cron job 的脚本路径和环境均由
 Second User 的 profile 提供，不设置或使用 `WX_PROJECT_DIR`。
 

@@ -67,6 +67,11 @@ class CronFeedTest(unittest.TestCase):
     def test_quarterly_feed_has_no_events_marker(self):
         self.assertIn("无新消息", feed.render_quarterly([], {}, 0))
 
+    def test_fixed_cron_entrypoints_select_their_modes(self):
+        self.assertEqual(feed.implied_mode("wechat_daily_feed.py"), "daily")
+        self.assertEqual(feed.implied_mode("wechat_quarterly_feed.py"), "quarterly")
+        self.assertIsNone(feed.implied_mode("wechat_snapshot_feed.py"))
+
 
 if __name__ == "__main__":
     unittest.main()

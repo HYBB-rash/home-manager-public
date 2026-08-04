@@ -181,9 +181,18 @@ def write_items(items: list[dict[str, str]]) -> None:
     temporary.replace(target)
 
 
+def implied_mode(program: str) -> str | None:
+    name = pathlib.Path(program).name
+    if name == "wechat_daily_feed.py":
+        return "daily"
+    if name == "wechat_quarterly_feed.py":
+        return "quarterly"
+    return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
-    mode = parser.add_mutually_exclusive_group(required=True)
+    mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--quarterly", action="store_true")
     mode.add_argument("--daily", action="store_true")
     mode.add_argument("--smoke-test", action="store_true")
@@ -191,6 +200,14 @@ def main() -> int:
     args = parser.parse_args()
     if args.minutes < 1:
         parser.error("--minutes must be at least one")
+    if not args.daily and not args.quarterly and not args.smoke_test:
+        mode = implied_mode(sys.argv[0])
+        if mode == "daily":
+            args.daily = True
+        elif mode == "quarterly":
+            args.quarterly = True
+        else:
+            parser.error("select --daily, --quarterly, or --smoke-test")
 
     try:
         path = snapshot_path()
