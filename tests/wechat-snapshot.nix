@@ -93,6 +93,8 @@
         "grep -F 'deploy-project EXPORTER_SOURCE' $(command -v wechat-vmctl); "
         "test -f /var/lib/hermes-user2/home/scripts/wechat-zt-daily-digest.sh; "
         "test ! -L /var/lib/hermes-user2/home/scripts/wechat-zt-daily-digest.sh; "
+        "grep -F -- '--max-chars 1800' "
+        "/var/lib/hermes-user2/home/scripts/wechat-zt-daily-digest.sh; "
         "sudo -l -U user | grep -F wechat-zt-root"
     )
     machine.succeed(

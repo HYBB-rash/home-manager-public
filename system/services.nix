@@ -13,7 +13,8 @@ let
         ;;
       *)
         if [ "$#" -eq 0 ]; then
-          exec "$bundle/bin/wx-daily-digest" --db "$snapshot" --text
+          exec "$bundle/bin/wx-daily-digest" --db "$snapshot" --text \
+            --max-chars 1800
         fi
         echo "unsupported managed wrapper argument" >&2
         exit 2

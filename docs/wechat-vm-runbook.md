@@ -49,8 +49,10 @@ Second User 的 Hermes cron 只运行快照消费者。受管发布拥有的作�
 `wechat-zt:`，并由 root 编排器保存“作业 ID + 配置指纹”清单；缺失、漂移或同名但
 不属于该清单的作业都会拒绝发布，不会接管用户作业。每日作业运行物理脚本
 `$HERMES_HOME/scripts/wechat-zt-daily-digest.sh`，由当前 consumer bundle 只读查询
-`WECHAT_SNAPSHOT_DB`。`WX_PROJECT_DIR` 指向只读 consumer bundle，只用于读取其
-README/manifest，绝不是数据源。
+`WECHAT_SNAPSHOT_DB`。该 wrapper 使用 `--max-chars 1800` 生成单条微信安全长度的
+晨报，避免 Hermes 按微信 2,000 字上限拆成大量消息并触发 iLink 限流。
+`WX_PROJECT_DIR` 指向只读的完整项目发布，只用于读取项目代码、文档和工具，绝不是
+数据源。
 
 Hermes cron 配置中的 `script` 字段只保存 `wechat-zt-daily-digest.sh` 这个单一文件名；
 编排器会先在 `$HERMES_HOME/scripts` 下解析并验证对应文件是物理普通文件，再调用
