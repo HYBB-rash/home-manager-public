@@ -136,11 +136,16 @@ class ZeroTouchValidationTest(unittest.TestCase):
             "paths": {"vm": vm, "user2": user2},
             "digests": {"vm": MODULE.sha256(vm), "user2": MODULE.sha256(user2)},
         }
-        MODULE.freeze_artifacts(release, self.base / "state")
+        MODULE.freeze_artifacts(release, self.base / "state", os.getgid())
         frozen_vm = release["paths"]["vm"]
+        frozen_user2 = release["paths"]["user2"]
         vm.write_bytes(b"changed-after-validation")
         self.assertEqual(frozen_vm.read_bytes(), b"vm-payload")
-        self.assertEqual(frozen_vm.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(frozen_vm.stat().st_mode & 0o777, 0o440)
+        self.assertEqual(frozen_vm.stat().st_gid, os.getgid())
+        self.assertEqual(frozen_user2.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(frozen_vm.parent.stat().st_mode & 0o777, 0o710)
+        self.assertEqual(frozen_vm.parent.parent.stat().st_mode & 0o777, 0o710)
 
     def test_managed_state_symlink_is_refused_without_reading_target(self):
         target = self.base / "private"

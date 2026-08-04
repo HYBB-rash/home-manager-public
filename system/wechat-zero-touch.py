@@ -236,11 +236,22 @@ def read_owned_regular(path: pathlib.Path, uid: int) -> bytes | None:
         os.close(descriptor)
 
 
-def freeze_artifacts(release: dict[str, Any], state_root: pathlib.Path) -> None:
+def freeze_artifacts(
+    release: dict[str, Any], state_root: pathlib.Path, operator_gid: int
+) -> None:
     identity = release["descriptor_digest"].removeprefix("sha256:")
-    frozen_root = state_root / "artifacts" / identity
-    frozen_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(frozen_root, 0o700)
+    artifact_root = state_root.with_name(f"{state_root.name}-artifacts")
+    artifact_root.mkdir(parents=True, exist_ok=True, mode=0o710)
+    if artifact_root.is_symlink() or not artifact_root.is_dir():
+        raise ReconcileError("R-105", "frozen artifact root is not a physical directory")
+    os.chown(artifact_root, -1, operator_gid)
+    os.chmod(artifact_root, 0o710)
+    frozen_root = artifact_root / identity
+    frozen_root.mkdir(exist_ok=True, mode=0o710)
+    if frozen_root.is_symlink() or not frozen_root.is_dir():
+        raise ReconcileError("R-105", "frozen release root is not a physical directory")
+    os.chown(frozen_root, -1, operator_gid)
+    os.chmod(frozen_root, 0o710)
     for plane in ("vm", "user2"):
         source = release["paths"][plane]
         destination = frozen_root / ARTIFACTS[plane][0]
@@ -261,6 +272,11 @@ def freeze_artifacts(release: dict[str, Any], state_root: pathlib.Path) -> None:
                 os.replace(temporary, destination)
             finally:
                 pathlib.Path(temporary).unlink(missing_ok=True)
+        if plane == "vm":
+            os.chown(destination, -1, operator_gid)
+            os.chmod(destination, 0o440)
+        else:
+            os.chmod(destination, 0o600)
         release["paths"][plane] = destination
 
 
@@ -339,6 +355,7 @@ def restore_release_link(root: pathlib.Path, current_name: str, old_target: str 
 def reconcile(args: argparse.Namespace, runner: Runner) -> str:
     evidence = preflight(args, runner)
     owner_uid = int(runner.run([args.id, "-u", args.operator]).strip())
+    operator_gid = int(runner.run([args.id, "-g", args.operator]).strip())
     user2_uid = int(runner.run([args.id, "-u", args.user2_user]).strip())
     release = validate_release(pathlib.Path(args.release_dir), evidence["binding_sha256"], owner_uid)
     state_root = pathlib.Path(args.state_root)
@@ -370,7 +387,7 @@ def reconcile(args: argparse.Namespace, runner: Runner) -> str:
     finally:
         probe_path.unlink(missing_ok=True)
 
-    freeze_artifacts(release, state_root)
+    freeze_artifacts(release, state_root, operator_gid)
     atomic_json(desired_path, desired, 0o640)
     shutil.chown(desired_path, user=args.user2_user, group=args.user2_group)
     user2_root = pathlib.Path(args.user2_release_root)
