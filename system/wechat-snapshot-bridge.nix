@@ -247,7 +247,7 @@ let
         --installer ${codeReleaseInstaller}/bin/wechat-code-release-install \
         --cron-reconciler ${cronReconciler}/bin/wechat-cron-reconcile \
         --hermes-cli /run/current-system/sw/bin/hermes-user2-cli \
-        --user2-wrapper /var/lib/hermes-user2/home/scripts/wechat-zt-daily-digest \
+        --user2-wrapper /var/lib/hermes-user2/home/scripts/wechat-zt-daily-digest.sh \
         --user2-home /var/lib/hermes-user2/home \
         --user2-workspace /var/lib/hermes-user2/workspace \
         --user2-release-root ${lib.escapeShellArg cfg.destination} \

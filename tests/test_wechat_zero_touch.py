@@ -162,7 +162,7 @@ class FakeRunner:
         self.fail_health = fail_health
         self.release_root = release_root
 
-    def run(self, command, *, env=None):
+    def run(self, command, *, env=None, label=None):
         self.commands.append(command)
         if "-u" in command and command[-2:] == ["id", "placeholder"]:
             return str(os.getuid())
@@ -179,7 +179,7 @@ class FakeRunner:
                 (root / "bundle-current").symlink_to("bundle-releases/old")
                 (root / "bundle-previous").symlink_to("bundle-releases/older")
             current = os.readlink(root / "bundle-current")
-            (root / "bundle-previous").unlink()
+            (root / "bundle-previous").unlink(missing_ok=True)
             (root / "bundle-previous").symlink_to(current)
             (root / "bundle-current").unlink()
             (root / "bundle-current").symlink_to("bundle-releases/new")
@@ -270,9 +270,50 @@ class ZeroTouchTransactionTest(unittest.TestCase):
         self.assertTrue(any("vmctl rollback" in command for command in flattened))
         self.assertGreaterEqual(sum("cron-reconciler" in command for command in flattened), 2)
 
+    @mock.patch.object(MODULE.shutil, "chown", autospec=True)
+    @mock.patch.object(MODULE, "freeze_artifacts")
+    @mock.patch.object(MODULE, "validate_release")
+    @mock.patch.object(MODULE, "preflight")
+    def test_first_install_failure_removes_current_link(self, preflight, validate, _freeze, _chown):
+        preflight.return_value = {"binding_sha256": "sha256:" + "a" * 64}
+        validate.return_value = fake_release(self.base)
+        root = pathlib.Path(self.args.user2_release_root)
+        runner = FakeRunner(fail_health=True, release_root=root)
+        with self.assertRaisesRegex(MODULE.ReconcileError, "code and schedule restored"):
+            MODULE.reconcile(self.args, runner)
+        self.assertFalse((root / "bundle-current").exists())
+
+    @mock.patch.object(MODULE.shutil, "chown", autospec=True)
+    @mock.patch.object(MODULE, "freeze_artifacts")
+    @mock.patch.object(MODULE, "validate_release")
+    @mock.patch.object(MODULE, "preflight")
+    def test_failed_first_install_retry_enables_exact_cron_recovery(self, preflight, validate, _freeze, _chown):
+        preflight.return_value = {"binding_sha256": "sha256:" + "a" * 64}
+        validate.return_value = fake_release(self.base)
+        root = pathlib.Path(self.args.user2_release_root)
+        (root / "bundle-releases" / validate.return_value["release_id"]).mkdir(
+            parents=True
+        )
+        (root / "bundle-current").symlink_to(
+            f"bundle-releases/{validate.return_value['release_id']}"
+        )
+        runner = FakeRunner(release_root=root)
+        MODULE.reconcile(self.args, runner)
+        cron_commands = [command for command in runner.commands if "cron-reconciler" in command]
+        self.assertTrue(cron_commands)
+        self.assertTrue(all("--recover-exact-collisions" in command for command in cron_commands))
+
     def test_runner_closes_stdin(self):
         source = pathlib.Path(MODULE_PATH).read_text(encoding="utf-8")
         self.assertIn("stdin=subprocess.DEVNULL", source)
+
+    def test_runner_reports_only_the_stable_stage_label(self):
+        completed = mock.Mock(returncode=1, stdout="sensitive runtime detail")
+        with mock.patch.object(MODULE.subprocess, "run", return_value=completed):
+            with self.assertRaisesRegex(MODULE.ReconcileError, "user2-health") as raised:
+                MODULE.Runner().run(["runuser", "private-path"], label="user2-health")
+        self.assertNotIn("sensitive runtime detail", str(raised.exception))
+        self.assertNotIn("private-path", str(raised.exception))
 
 
 if __name__ == "__main__":

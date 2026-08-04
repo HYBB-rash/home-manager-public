@@ -89,8 +89,8 @@
     machine.succeed(
         "test -x /run/current-system/sw/bin/wechat-zt; "
         "grep -F 'make -C \"$project\" test' /run/current-system/sw/bin/wechat-zt; "
-        "test -f /var/lib/hermes-user2/home/scripts/wechat-zt-daily-digest; "
-        "test ! -L /var/lib/hermes-user2/home/scripts/wechat-zt-daily-digest; "
+        "test -f /var/lib/hermes-user2/home/scripts/wechat-zt-daily-digest.sh; "
+        "test ! -L /var/lib/hermes-user2/home/scripts/wechat-zt-daily-digest.sh; "
         "sudo -l -U user | grep -F wechat-zt-root"
     )
     machine.succeed(

@@ -186,7 +186,13 @@ def validate_release(release_dir: pathlib.Path, binding_digest: str, owner_uid: 
 
 
 class Runner:
-    def run(self, command: list[str], *, env: dict[str, str] | None = None) -> str:
+    def run(
+        self,
+        command: list[str],
+        *,
+        env: dict[str, str] | None = None,
+        label: str | None = None,
+    ) -> str:
         result = subprocess.run(
             command,
             stdin=subprocess.DEVNULL,
@@ -198,7 +204,7 @@ class Runner:
             check=False,
         )
         if result.returncode != 0:
-            name = pathlib.Path(command[0]).name
+            name = label or pathlib.Path(command[0]).name
             raise ReconcileError(
                 "R-111", f"{name} failed noninteractively with exit {result.returncode}"
             )
@@ -295,7 +301,7 @@ def preflight(args: argparse.Namespace, runner: Runner) -> dict[str, Any]:
     runner.run([args.systemctl, "is-active", "hermes-user2.service"])
     runner.run([args.runuser, "-u", args.operator, "--", args.vmctl, "release-status"])
     scripts = pathlib.Path(args.user2_home) / "scripts"
-    wrapper = scripts / "wechat-zt-daily-digest"
+    wrapper = scripts / "wechat-zt-daily-digest.sh"
     if wrapper.is_symlink() or not wrapper.is_file() or not os.access(wrapper, os.X_OK):
         raise ReconcileError("R-106", "Second User managed cron wrapper is not a physical executable")
     return {
@@ -320,15 +326,19 @@ def desired_cron(release: dict[str, Any], args: argparse.Namespace) -> dict[str,
             "name": "wechat-zt:daily-digest",
             "schedule": cron,
             "deliver": "origin",
-            "script": str(pathlib.Path(args.user2_home) / "scripts" / "wechat-zt-daily-digest"),
+            "script": str(pathlib.Path(args.user2_home) / "scripts" / "wechat-zt-daily-digest.sh"),
             "workdir": args.user2_workspace,
             "no_agent": True,
         }],
     }
 
 
-def cron_command(args: argparse.Namespace, desired_path: pathlib.Path) -> list[str]:
-    return [
+def cron_command(
+    args: argparse.Namespace,
+    desired_path: pathlib.Path,
+    recover_exact_collisions: bool = False,
+) -> list[str]:
+    command = [
         args.runuser, "-u", args.user2_user, "--", args.cron_reconciler,
         "--desired", str(desired_path),
         "--inventory", str(pathlib.Path(args.user2_home) / "runtime" / "wechat-zt-owned-jobs.json"),
@@ -336,6 +346,9 @@ def cron_command(args: argparse.Namespace, desired_path: pathlib.Path) -> list[s
         "--hermes-cli", args.hermes_cli,
         "--script-root", str(pathlib.Path(args.user2_home) / "scripts"),
     ]
+    if recover_exact_collisions:
+        command.append("--recover-exact-collisions")
+    return command
 
 
 def restore_release_link(root: pathlib.Path, current_name: str, old_target: str | None, prefix: str) -> None:
@@ -365,14 +378,20 @@ def reconcile(args: argparse.Namespace, runner: Runner) -> str:
     desired = desired_cron(release, args)
     desired_path = pathlib.Path(args.user2_home) / "runtime" / "wechat-zt-desired.json"
     old_desired = read_owned_regular(desired_path, user2_uid)
+    user2_root = pathlib.Path(args.user2_release_root)
+    old_user2_target = os.readlink(user2_root / "bundle-current") if (user2_root / "bundle-current").is_symlink() else None
+    recover_exact_collisions = (
+        current_state is None
+        and old_user2_target == f"bundle-releases/{release['release_id']}"
+    )
 
     if current_state and current_state.get("descriptor_digest") == release["descriptor_digest"]:
         if old_desired != canonical_json(desired):
             raise ReconcileError("R-109", "managed cron desired state drifted from current release")
-        runner.run(cron_command(args, desired_path))
+        runner.run(cron_command(args, desired_path), label="cron-reconcile")
         runner.run([
             args.runuser, "-u", args.user2_user, "--", args.user2_wrapper, "--check-only"
-        ])
+        ], label="user2-health")
         return f"no-op release={release['release_id']}"
 
     runtime_root = pathlib.Path(args.user2_home) / "runtime"
@@ -383,23 +402,27 @@ def reconcile(args: argparse.Namespace, runner: Runner) -> str:
             stream.write(canonical_json(desired))
         os.chmod(probe_path, 0o640)
         shutil.chown(probe_path, user=args.user2_user, group=args.user2_group)
-        runner.run([*cron_command(args, probe_path), "--dry-run"])
+        runner.run(
+            [*cron_command(args, probe_path, recover_exact_collisions), "--dry-run"],
+            label="cron-preflight",
+        )
     finally:
         probe_path.unlink(missing_ok=True)
 
     freeze_artifacts(release, state_root, operator_gid)
     atomic_json(desired_path, desired, 0o640)
     shutil.chown(desired_path, user=args.user2_user, group=args.user2_group)
-    user2_root = pathlib.Path(args.user2_release_root)
-    old_user2_target = os.readlink(user2_root / "bundle-current") if (user2_root / "bundle-current").is_symlink() else None
     vm_changed = user2_changed = cron_changed = False
     try:
         runner.run([
             args.runuser, "-u", args.operator, "--", args.vmctl, "deploy", "--artifact",
             release["source_sha"], str(release["paths"]["vm"]), release["digests"]["vm"],
-        ])
+        ], label="vm-deploy")
         vm_changed = True
-        runner.run([args.systemctl, "start", "wechat-snapshot-pull.service"])
+        runner.run(
+            [args.systemctl, "start", "wechat-snapshot-pull.service"],
+            label="snapshot-pull",
+        )
         runner.run([
             args.installer,
             "--archive", str(release["paths"]["user2"]),
@@ -411,20 +434,23 @@ def reconcile(args: argparse.Namespace, runner: Runner) -> str:
             "--current-link", "bundle-current",
             "--previous-link", "bundle-previous",
             "--expected-sha256", release["digests"]["user2"],
-        ])
+        ], label="user2-install")
         user2_changed = True
-        runner.run(cron_command(args, desired_path))
+        runner.run(
+            cron_command(args, desired_path, recover_exact_collisions),
+            label="cron-reconcile",
+        )
         cron_changed = True
         runner.run([
             args.runuser, "-u", args.user2_user, "--", args.user2_wrapper, "--check-only"
-        ])
+        ], label="user2-health")
     except Exception as error:
         rollback_errors = []
         if cron_changed:
             try:
                 desired_path.write_bytes(old_desired or canonical_json({"version": 1, "jobs": []}))
                 shutil.chown(desired_path, user=args.user2_user, group=args.user2_group)
-                runner.run(cron_command(args, desired_path))
+                runner.run(cron_command(args, desired_path), label="cron-rollback")
                 if old_desired is None:
                     desired_path.unlink()
             except Exception as rollback_error:
@@ -441,7 +467,10 @@ def reconcile(args: argparse.Namespace, runner: Runner) -> str:
                 rollback_errors.append(f"user2: {rollback_error}")
         if vm_changed:
             try:
-                runner.run([args.runuser, "-u", args.operator, "--", args.vmctl, "rollback"])
+                runner.run(
+                    [args.runuser, "-u", args.operator, "--", args.vmctl, "rollback"],
+                    label="vm-rollback",
+                )
             except Exception as rollback_error:
                 rollback_errors.append(f"vm: {rollback_error}")
         suffix = f"; rollback incomplete: {rollback_errors[0]}" if rollback_errors else "; code and schedule restored"

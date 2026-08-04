@@ -18,7 +18,7 @@ from typing import Any, Callable
 LOGICAL_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 JOB_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 FINGERPRINT_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
-CREATED_RE = re.compile(r"^Created job: ([A-Za-z0-9_-]+)$", re.MULTILINE)
+CREATED_RE = re.compile(r"Created job:\s*([A-Za-z0-9_-]{1,128})(?:\s|$)")
 
 
 class CronReconcileError(RuntimeError):
@@ -209,6 +209,7 @@ def build_plan(
     inventory: dict[str, dict[str, str]],
     actual_jobs: list[dict[str, Any]],
     prefix: str,
+    recover_exact_collisions: bool = False,
 ) -> list[Operation]:
     by_id: dict[str, dict[str, Any]] = {}
     by_name: dict[str, list[dict[str, Any]]] = {}
@@ -236,7 +237,19 @@ def build_plan(
     for logical_name, wanted in desired.items():
         actual = owned_actual.get(logical_name)
         if actual is None:
-            if by_name.get(wanted.name):
+            collisions = by_name.get(wanted.name, [])
+            if collisions:
+                if (
+                    recover_exact_collisions
+                    and len(collisions) == 1
+                    and isinstance(collisions[0].get("id"), str)
+                    and JOB_ID_RE.fullmatch(collisions[0]["id"])
+                    and normalize_actual(collisions[0]) == wanted.config()
+                ):
+                    operations.append(
+                        Operation("adopt", logical_name, desired=wanted, actual=collisions[0])
+                    )
+                    continue
                 raise CronReconcileError(f"unowned cron name collision: {wanted.name}")
             operations.append(Operation("create", logical_name, desired=wanted))
         elif fingerprint(normalize_actual(actual)) != fingerprint(wanted.config()):
@@ -251,8 +264,9 @@ def build_plan(
 
 
 class HermesCron:
-    def __init__(self, executable: pathlib.Path):
+    def __init__(self, executable: pathlib.Path, jobs_path: pathlib.Path):
         self.executable = executable
+        self.jobs_path = jobs_path
 
     def run(self, *args: str) -> str:
         environment = os.environ.copy()
@@ -276,6 +290,10 @@ class HermesCron:
         return result.stdout
 
     def create(self, job: DesiredJob) -> str:
+        before_ids = {
+            row.get("id") for row in load_jobs(self.jobs_path)
+            if isinstance(row.get("id"), str)
+        }
         args = [
             "create",
             job.schedule,
@@ -292,9 +310,23 @@ class HermesCron:
             args.extend(["--workdir", job.workdir])
         output = self.run(*args)
         match = CREATED_RE.search(output)
-        if match is None or not JOB_ID_RE.fullmatch(match.group(1)):
-            raise CronReconcileError("Hermes cron create returned no valid job id")
-        return match.group(1)
+        reported_id = match.group(1) if match is not None else None
+        candidates = [
+            row for row in load_jobs(self.jobs_path)
+            if row.get("id") not in before_ids
+            and isinstance(row.get("id"), str)
+            and JOB_ID_RE.fullmatch(row["id"])
+            and normalize_actual(row) == job.config()
+        ]
+        if reported_id is not None:
+            reported = [row for row in candidates if row["id"] == reported_id]
+            if len(reported) == 1:
+                return reported_id
+        if len(candidates) == 1:
+            return candidates[0]["id"]
+        raise CronReconcileError(
+            "Hermes cron create did not produce exactly one matching job"
+        )
 
     def edit(self, job_id: str, job: DesiredJob) -> None:
         args = [
@@ -370,9 +402,12 @@ def reconcile(
     inventory_path: pathlib.Path,
     prefix: str,
     client: HermesCron,
+    recover_exact_collisions: bool = False,
 ) -> list[Operation]:
     actual_jobs = load_jobs(jobs_path)
-    plan = build_plan(desired, inventory, actual_jobs, prefix)
+    plan = build_plan(
+        desired, inventory, actual_jobs, prefix, recover_exact_collisions
+    )
     if not plan:
         return plan
 
@@ -380,7 +415,14 @@ def reconcile(
     applied: list[tuple[str, str, DesiredJob | None]] = []
     try:
         for operation in plan:
-            if operation.action == "create":
+            if operation.action == "adopt":
+                assert operation.actual is not None and operation.desired is not None
+                job_id = str(operation.actual["id"])
+                next_inventory[operation.logical_name] = {
+                    "job_id": job_id,
+                    "fingerprint": fingerprint(operation.desired.config()),
+                }
+            elif operation.action == "create":
                 assert operation.desired is not None
                 job_id = client.create(operation.desired)
                 next_inventory[operation.logical_name] = {
@@ -448,12 +490,17 @@ def main() -> int:
     parser.add_argument("--script-root", type=pathlib.Path, required=True)
     parser.add_argument("--managed-prefix", default="wechat-zt:")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--recover-exact-collisions", action="store_true")
     args = parser.parse_args()
     try:
         desired = load_desired(args.desired, args.managed_prefix, args.script_root)
         inventory = load_inventory(args.inventory, args.managed_prefix)
         plan = build_plan(
-            desired, inventory, load_jobs(args.jobs_file), args.managed_prefix
+            desired,
+            inventory,
+            load_jobs(args.jobs_file),
+            args.managed_prefix,
+            args.recover_exact_collisions,
         )
         if args.dry_run:
             print(json.dumps([operation.action for operation in plan]))
@@ -464,7 +511,8 @@ def main() -> int:
             args.jobs_file,
             args.inventory,
             args.managed_prefix,
-            HermesCron(args.hermes_cli),
+            HermesCron(args.hermes_cli, args.jobs_file),
+            args.recover_exact_collisions,
         )
     except CronReconcileError as error:
         print(f"REFUSED R-104: {error}", file=os.sys.stderr)

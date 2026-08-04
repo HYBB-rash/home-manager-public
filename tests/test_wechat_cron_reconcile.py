@@ -7,6 +7,7 @@ import pathlib
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -133,6 +134,53 @@ class CronReconcileTest(unittest.TestCase):
                 [actual("foreign", wanted)],
                 "wechat-zt:",
             )
+
+    def test_exact_collision_is_adopted_only_in_explicit_recovery(self):
+        wanted = desired()
+        job = actual("created-by-failed-transaction", wanted)
+        plan = MODULE.build_plan(
+            {wanted.logical_name: wanted},
+            {},
+            [job],
+            "wechat-zt:",
+            recover_exact_collisions=True,
+        )
+        self.assertEqual([operation.action for operation in plan], ["adopt"])
+
+        changed = dict(job)
+        changed["deliver"] = "local"
+        with self.assertRaisesRegex(MODULE.CronReconcileError, "unowned cron name"):
+            MODULE.build_plan(
+                {wanted.logical_name: wanted},
+                {},
+                [changed],
+                "wechat-zt:",
+                recover_exact_collisions=True,
+            )
+
+    def test_hermes_create_accepts_prefixed_output_and_verifies_jobs_file(self):
+        wanted = desired(script=str(self.base / "job.py"))
+        write_jobs(self.jobs_path, [])
+        client = MODULE.HermesCron(pathlib.Path("/bin/false"), self.jobs_path)
+
+        def fake_run(*_args):
+            write_jobs(self.jobs_path, [actual("job42", wanted)])
+            return "(^_^)b Created job: job42\n"
+
+        with mock.patch.object(client, "run", side_effect=fake_run):
+            self.assertEqual(client.create(wanted), "job42")
+
+    def test_hermes_create_recovers_unique_matching_job_without_receipt(self):
+        wanted = desired(script=str(self.base / "job.py"))
+        write_jobs(self.jobs_path, [])
+        client = MODULE.HermesCron(pathlib.Path("/bin/false"), self.jobs_path)
+
+        def fake_run(*_args):
+            write_jobs(self.jobs_path, [actual("job43", wanted)])
+            return "unexpected but successful output\n"
+
+        with mock.patch.object(client, "run", side_effect=fake_run):
+            self.assertEqual(client.create(wanted), "job43")
 
     def test_actual_fingerprint_drift_is_refused_before_mutation(self):
         wanted = desired()
