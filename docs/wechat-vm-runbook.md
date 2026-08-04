@@ -37,6 +37,69 @@ SFTP 的快照账号，22223 端口用于 VM 操作者。它不会删除或改�
 规则。这个稀疏虚拟设备配有独立的 256 GiB ext4 数据盘，挂载到
 `/home/wechat-exporter/.var`，使微信 Flatpak 账号数据与 50 GiB 系统盘分离。
 
+## 迁移后的首次启动
+
+从新版 OVA 启动的 VM 使用全新的系统盘。256 GiB 数据盘只保存
+`/home/wechat-exporter/.var` 下的微信运行数据，**不包含 Flatpak 客户端软件本身**；
+因此迁移后首次打开控制台发现微信尚未安装是预期现象，不表示数据盘丢失。
+
+在 VM 的 Xfce 终端中安装客户端：
+
+```bash
+wechat-install-flatpak
+```
+
+安装完成后，从 Xfce 菜单启动微信。微信是否保留登录态取决于其本地认证状态与
+账号安全策略；即使历史数据仍在，首次在新系统盘运行时要求重新扫码登录也属于
+预期现象。登录和手机确认必须由人工完成，本配置不会代替账号执行扫码或确认。
+
+迁移期间，旧的 `wechat-exporter` VM 及其原始数据盘保持不变；
+`/home/user/VirtualBox VMs/wechat-exporter-lan-rollback/` 中还保留了独立的
+256 GiB 数据盘克隆。在新的 VM 稳定运行、数据和同步均确认正常前，不要删除这些
+回退资源。
+
+## 按需启用局域网桥接
+
+默认只有 NIC1 的 NAT 网络和上述两个回环端口转发。NIC2 为 NAT 附加但网线断开，
+因此没有地址、没有网络路径，也不会改动 NIC1 或任何 NAT 转发。需要让 VM 临时
+出现在局域网时，使用宿主机上的受控 NIC2；它只桥接到 `wlp0s20f3`。新版 VM
+镜像为 NIC2 固定 MAC `08:00:27:A1:1C:E2`，在客体中以稳定的第二插槽名称
+`enp0s8` 出现。只有这个接口被声明为 firewall trusted；全局防火墙仍然启用，
+NIC1 仍只按现有规则开放 SSH：
+
+```bash
+wechat-vmctl bridge status
+wechat-vmctl bridge enable
+```
+
+`enable` 仅在 NIC2 尚未按预期桥接时生效。受 systemd 管理且正在运行的 VM 使用
+VirtualBox 热插拔 NIC2，不会停止、保存或重启 VM；NIC1、NAT 转发及 RDP 会话保持
+不变。启用时，NIC2 以该固定 MAC 附加到桥接，客体中的 `enp0s8` 因而获得受
+信任的入站访问，供手机同步使用。关机或中止的 VM 则在下一次启动前修改 NIC2。
+保存状态的 VM 必须先通过 `wechat-vmctl start` 恢复后再操作，避免 VirtualBox 对
+保存状态拒绝硬件配置变更。
+
+完成局域网访问后立即关闭桥接：
+
+```bash
+wechat-vmctl bridge disable
+wechat-vmctl bridge status
+```
+
+`disable` 将 NIC2 恢复为 NAT 附加并断开网线。`enp0s8` 虽会保留为一个没有载波、
+没有地址的接口，但没有任何受信任接口可经由网络到达；这恢复了桥接前的
+客体防火墙暴露面。同样保留 NIC1 NAT、22222/22223 的回环转发以及 VM 原有的
+运行状态。状态显示
+`enabled (wlp0s20f3, NIC2)` 或 `disabled (NIC2)`；任何其他 NIC2 配置都会以
+非零状态退出，要求先人工检查。
+
+首次启用前，VM 必须已经从包含上述客体网络策略的新版 OVA 导入，或已经以同一
+Nix 配置完成客体系统更新。只更新宿主机配置不会把客体防火墙规则注入旧 VM；在
+未满足此前提时不得启用桥接。
+
+当前迁移完成后，受管的新 VM 名称为 `wechat-exporter-lan-secure`；旧的
+`wechat-exporter` 保持注册且为保存状态，作为本地回退实例。
+
 RDP 控制台使用 Oracle Extension Pack 的 VRDE，只监听
 `127.0.0.1:33890`。`wechat-vmctl` 在 User 的 0700 状态目录中生成专用
 随机密码，以 `VBoxAuthSimple` 完成认证，并通过标准输入把连接参数交给
@@ -80,16 +143,15 @@ wechat-vmctl trust-host-key SHA256:...
 ## 部署并到达登录边界
 
 部署一次导出器已经提交的 `HEAD`。该命令使用 `git archive`，因此本地被
-忽略或未跟踪的账号密钥和配置不会进入 VM。VM 会初始化自己的可变 Git
-仓库，因此之后在导出器一侧开发时不依赖宿主机上的副本。
+忽略或未跟踪的账号密钥和配置不会进入 VM。部署先在 VM 的暂存目录运行测试，
+成功后才原子切换运行版本；不会在 VM 中执行 `git pull`。
 
 ```bash
 wechat-vmctl deploy /home/user/Projects/Hermes/wechat-linux-decrypt-demo
 ```
 
-在 VM 中，根据第二个账号的本地设置创建
-`/var/lib/wechat-exporter/source/` 下的 `config.local.json`。不要把密钥放入
-该文件。然后运行：
+首次部署后，在 VM 中根据第二个账号的本地设置创建
+`/var/lib/wechat-exporter/state/config.local.json`。不要把密钥放入该文件。然后运行：
 
 ```bash
 wechat-exporterctl test
@@ -113,6 +175,33 @@ wechat-exporterctl start
 
 配置文件和密钥文件就绪后，导出器服务会在之后每次虚拟机启动时运行。
 微信也会在专用的 Xfce 会话中启动，因此预期只需要进行一次交互式账号登录。
+
+## 日常发布和回退
+
+代码、账号状态与发布物严格分离：
+
+```text
+/var/lib/wechat-exporter/
+  releases/<git-commit>/     # 不可变代码版本
+  current -> releases/...    # 当前运行版本
+  previous -> releases/...   # 上一个可回退版本
+  state/                     # config、keys、解密缓存和 published_*.db
+```
+
+发布只传送导出项目的已提交 `HEAD`。若 `state` 已准备好配置和密钥，控制器会重启
+服务并最多等待三分钟执行只读健康检查；检查失败会自动恢复 `previous`。首次登录尚未
+完成时，发布会成功完成代码切换并明确提示 bootstrap 未完成，不会把“没有数据”误报成
+发布失败。
+
+```bash
+wechat-vmctl deploy /home/user/Projects/Hermes/wechat-linux-decrypt-demo
+wechat-vmctl release-status
+wechat-vmctl rollback
+```
+
+`rollback` 只切换代码软链接并重启服务，绝不回退或删除 `state` 中的微信数据、密钥和
+发布数据库。当前正在运行的已迁移 VM 会保留一个兼容启动器，直到下次重新制作 VM 镜像；
+这不影响发布语义，也不要求重装微信或重新登录。
 
 虚拟机暴露定时器只接受一个已经完成的 `published_*.db`，使用 SQLite backup
 API，要求导出器的完整 Schema，执行 `integrity_check`，并以原子方式切换到

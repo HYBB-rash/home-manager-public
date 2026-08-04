@@ -92,5 +92,17 @@
         "systemctl show wechat-exporter-vm.service -p DeviceAllow --value "
         "| grep -F '/dev/vboxdrv rw'"
     )
+    machine.succeed(
+        "wechat-vmctl 2>&1 | grep -F "
+        "'bridge {enable|disable|status}'"
+    )
+    machine.succeed(
+        "wechat-vmctl 2>&1 | grep -F "
+        "'deploy EXPORTER_SOURCE|rollback|release-status'"
+    )
+    machine.succeed(
+        "systemctl cat wechat-exporter-vm.service "
+        "| grep -F 'wechat-vm-configure'"
+    )
   '';
 }

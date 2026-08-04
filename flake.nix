@@ -138,6 +138,15 @@
         wechat-snapshot-read-only = pkgs.testers.runNixOSTest (
           import ./tests/wechat-snapshot.nix { inherit pkgs; }
         );
+        wechat-exporter-lan-firewall =
+          assert wechatVmConfiguration.config.virtualbox.params.nic1 == "nat";
+          assert wechatVmConfiguration.config.virtualbox.params.nic2 == "nat";
+          assert wechatVmConfiguration.config.virtualbox.params.macaddress2 == "080027A11CE2";
+          assert builtins.elem "enp0s8"
+            wechatVmConfiguration.config.networking.firewall.trustedInterfaces;
+          pkgs.runCommand "wechat-exporter-lan-firewall" { } ''
+            touch "$out"
+          '';
       };
 
       formatter.${system} = pkgs.nixfmt;

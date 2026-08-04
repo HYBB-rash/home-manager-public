@@ -204,7 +204,9 @@ let
       pkgs.freerdp
       pkgs.git
       pkgs.gnugrep
+      pkgs.gnused
       pkgs.openssh
+      pkgs.gnutar
     ];
     text = ''
       set -euo pipefail
@@ -213,8 +215,98 @@ let
       vm=${lib.escapeShellArg cfg.vmName}
       operator_state=${lib.escapeShellArg operatorState}
       operator_key="$operator_state/operator_ed25519"
+      operator_known_hosts=${lib.escapeShellArg "${statePath}/known_hosts"}
+      bridge_interface=${lib.escapeShellArg cfg.bridgeInterface}
+      bridge_mac=${lib.escapeShellArg cfg.bridgeMac}
       start_service() {
         /run/wrappers/bin/sudo ${controlVmService}/bin/wechat-vm-service-control start
+      }
+      stop_service() {
+        /run/wrappers/bin/sudo ${controlVmService}/bin/wechat-vm-service-control stop
+      }
+      vm_state() {
+        ${vboxManage} showvminfo "$vm" --machinereadable | sed -n 's/^VMState="\(.*\)"/\1/p'
+      }
+      bridge_settings() {
+        ${vboxManage} showvminfo "$vm" --machinereadable | \
+          ${pkgs.gawk}/bin/awk -F= '/^(nic2|bridgeadapter2|cableconnected2)=/ { gsub(/"/, "", $2); print $1 "=" $2 }'
+      }
+      bridge_mode() {
+        bridge_settings | ${pkgs.gawk}/bin/awk -F= -v interface="$bridge_interface" '
+          $1 == "nic2" { nic = $2 }
+          $1 == "bridgeadapter2" { adapter = $2 }
+          $1 == "cableconnected2" { cable = $2 }
+          END {
+            if (nic == "nat" && cable == "off") print "disabled"
+            else if (nic == "bridged" && adapter == interface && cable == "on") print "enabled"
+            else print "unexpected"
+          }
+        '
+      }
+      bridge_status() {
+        state="$(vm_state)"
+        mode="$(bridge_mode)"
+        case "$mode" in
+          enabled)
+            printf 'LAN bridge: enabled (%s, NIC2)\n' "$bridge_interface"
+            ;;
+          disabled)
+            printf 'LAN bridge: disabled (NIC2)\n'
+            ;;
+          unexpected)
+            printf 'LAN bridge: unexpected NIC2 configuration\n' >&2
+            bridge_settings >&2
+            return 1
+            ;;
+        esac
+        printf 'VM state: %s\n' "$state"
+      }
+      reconfigure_bridge() {
+        requested_mode=$1
+        current_mode="$(bridge_mode)"
+        if [ "$current_mode" = "$requested_mode" ]; then
+          printf 'LAN bridge is already %s.\n' "$requested_mode"
+          return 0
+        fi
+
+        service_was_active=0
+        if ${pkgs.systemd}/bin/systemctl is-active --quiet wechat-exporter-vm.service; then
+          service_was_active=1
+        fi
+
+        state="$(vm_state)"
+        if [ "$state" = running ] && [ "$service_was_active" -eq 1 ]; then
+          case "$requested_mode" in
+            enabled)
+              ${vboxManage} controlvm "$vm" nic2 bridged "$bridge_interface"
+              ${vboxManage} controlvm "$vm" setlinkstate2 on
+              ;;
+            disabled)
+              ${vboxManage} controlvm "$vm" setlinkstate2 off
+              ${vboxManage} controlvm "$vm" nic2 nat
+              ;;
+          esac
+        elif [ "$state" = poweroff ] || [ "$state" = aborted ]; then
+          case "$requested_mode" in
+            enabled)
+              ${vboxManage} modifyvm "$vm" \
+                --nic2 bridged \
+                --bridgeadapter2 "$bridge_interface" \
+                --macaddress2 "$bridge_mac" \
+                --cableconnected2 on
+              ;;
+            disabled)
+              ${vboxManage} modifyvm "$vm" --nic2 nat --cableconnected2 off
+              ;;
+          esac
+        elif [ "$state" = saved ]; then
+          echo "VM is saved; start the managed service first, then retry the bridge command." >&2
+          exit 1
+        else
+          echo "VM is in unsupported state for NIC2 reconfiguration: $state" >&2
+          exit 1
+        fi
+        bridge_status
       }
       rdp_args() {
         password="$(cat "$operator_state/rdp-password")"
@@ -229,6 +321,13 @@ let
           '-clipboard' \
           '/audio-mode:1'
       }
+      operator_ssh() {
+        ssh -p 22223 -o BatchMode=yes -o StrictHostKeyChecking=yes \
+          -i "$operator_key" -o IdentitiesOnly=yes \
+          -o HostKeyAlias=wechat-exporter-vm \
+          -o UserKnownHostsFile="$operator_known_hosts" \
+          wechat-exporter@${lib.escapeShellArg cfg.remoteHost} "$@"
+      }
       case "''${1:-}" in
         import)
           [ "$#" -eq 2 ] || { echo "usage: wechat-vmctl import OVA" >&2; exit 2; }
@@ -241,15 +340,33 @@ let
           ${configureVm}/bin/wechat-vm-configure
           ;;
         configure-network)
-          /run/wrappers/bin/sudo ${controlVmService}/bin/wechat-vm-service-control stop
+          stop_service
           ${configureVm}/bin/wechat-vm-configure
           start_service
+          ;;
+        bridge)
+          [ "$#" -eq 2 ] || { echo "usage: wechat-vmctl bridge {enable|disable|status}" >&2; exit 2; }
+          case "$2" in
+            enable)
+              reconfigure_bridge enabled
+              ;;
+            disable)
+              reconfigure_bridge disabled
+              ;;
+            status)
+              bridge_status
+              ;;
+            *)
+              echo "usage: wechat-vmctl bridge {enable|disable|status}" >&2
+              exit 2
+              ;;
+          esac
           ;;
         start|start-headless)
           start_service
           ;;
         stop)
-          /run/wrappers/bin/sudo ${controlVmService}/bin/wechat-vm-service-control stop
+          stop_service
           ;;
         status)
           ${vboxManage} showvminfo "$vm"
@@ -286,14 +403,132 @@ let
           [ "$#" -eq 2 ] || { echo "usage: wechat-vmctl deploy EXPORTER_SOURCE" >&2; exit 2; }
           source_dir="$(${pkgs.coreutils}/bin/realpath "$2")"
           [ -d "$source_dir" ] || { echo "exporter source is not a directory: $source_dir" >&2; exit 1; }
-          git -C "$source_dir" rev-parse --verify HEAD >/dev/null
-          git -C "$source_dir" archive --format=tar HEAD | \
-            ssh -p 22223 -o BatchMode=yes -o StrictHostKeyChecking=yes \
-              -i "$operator_key" -o IdentitiesOnly=yes \
-              -o HostKeyAlias=wechat-exporter-vm \
-              -o UserKnownHostsFile=${statePath}/known_hosts \
-              wechat-exporter@${lib.escapeShellArg cfg.remoteHost} \
-              'set -e; test ! -e /var/lib/wechat-exporter/source; stage=$(mktemp -d /var/lib/wechat-exporter/source.XXXXXX); tar -xf - -C "$stage"; git -C "$stage" init -q; git -C "$stage" config user.name "VM exporter baseline"; git -C "$stage" config user.email "vm-exporter@localhost"; git -C "$stage" add .; git -C "$stage" commit -qm "Import reproducible exporter baseline"; mv "$stage" /var/lib/wechat-exporter/source'
+          release="$(git -C "$source_dir" rev-parse --verify HEAD)"
+          release_short="$(git -C "$source_dir" rev-parse --short=12 "$release")"
+          archive="$(mktemp -t "wechat-exporter-$release_short.XXXXXX.tar")"
+          trap 'rm -f -- "$archive"' EXIT
+          git -C "$source_dir" archive --format=tar --output="$archive" "$release"
+          scp -P 22223 -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            -i "$operator_key" -o IdentitiesOnly=yes \
+            -o HostKeyAlias=wechat-exporter-vm \
+            -o UserKnownHostsFile="$operator_known_hosts" \
+            "$archive" wechat-exporter@${lib.escapeShellArg cfg.remoteHost}:"/var/lib/wechat-exporter/.incoming-''${release}.tar"
+          operator_ssh bash -s -- "$release" <<'REMOTE'
+            set -euo pipefail
+            release=$1
+            root=/var/lib/wechat-exporter
+            releases="$root/releases"
+            state="$root/state"
+            incoming="$root/.incoming-$release.tar"
+            stage="$(mktemp -d "$releases/.stage.$release.XXXXXX")"
+            cleanup() {
+              test -z "$stage" || rm -rf -- "$stage"
+              rm -f -- "$incoming"
+            }
+            trap cleanup EXIT
+
+            test -f "$incoming"
+            mkdir -p "$releases" "$state"
+            if test ! -e "$state/published" && test -e "$root/published" && ! test -L "$root/published"; then
+              mv "$root/published" "$state/published"
+            fi
+            mkdir -p "$state/published"
+
+            # The previous one-shot layout stored account state beside source.
+            # Move it once, then leave compatibility symlinks for the old unit.
+            mkdir -p "$root/source"
+            for name in config.local.json keys.json decrypted; do
+              if test ! -e "$state/$name" && test -e "$root/source/$name" && ! test -L "$root/source/$name"; then
+                mv "$root/source/$name" "$state/$name"
+              fi
+              if test -e "$state/$name" && ! test -L "$root/source/$name"; then
+                rm -rf -- "$root/source/$name"
+                ln -s "$state/$name" "$root/source/$name"
+              fi
+            done
+            if ! test -L "$root/published"; then
+              rm -rf -- "$root/published"
+              ln -s "$state/published" "$root/published"
+            fi
+
+            tar -xf "$incoming" -C "$stage"
+            test -f "$stage/sync.py"
+            test -d "$stage/tests"
+            WX_EXPORT_STATE_DIR="$state" \
+              WX_EXPORT_OUTPUT_DIR="$state/published" \
+              WX_EXPORT_MANAGED_DEPLOYMENT=1 \
+              /run/current-system/sw/bin/python3 -m unittest discover -s "$stage/tests"
+
+            if test ! -d "$releases/$release"; then
+              mv "$stage" "$releases/$release"
+              stage=
+            fi
+            old_current=
+            if test -L "$root/current"; then
+              old_current="$(readlink "$root/current")"
+            fi
+            next="$root/.current.$release"
+            ln -s "releases/$release" "$next"
+            mv -Tf "$next" "$root/current"
+            if test -n "$old_current"; then
+              next_previous="$root/.previous.$release"
+              ln -s "$old_current" "$next_previous"
+              mv -Tf "$next_previous" "$root/previous"
+            fi
+
+            # Existing imported guests still execute source/sync.py. Keep this
+            # tiny forwarder until their next declarative image migration.
+            if ! systemctl cat wechat-exporter-sync.service 2>/dev/null | grep -Fq '/var/lib/wechat-exporter/current/sync.py'; then
+              launcher="$root/source/.sync.py.$release"
+              printf '%s\n' \
+                'import os, sys' \
+                'root = "/var/lib/wechat-exporter"' \
+                'env = os.environ.copy()' \
+                'env["WX_EXPORT_STATE_DIR"] = root + "/state"' \
+                'env["WX_EXPORT_OUTPUT_DIR"] = root + "/state/published"' \
+                'env["WX_EXPORT_MANAGED_DEPLOYMENT"] = "1"' \
+                'os.execve(sys.executable, [sys.executable, root + "/current/sync.py"], env)' \
+                >"$launcher"
+              chmod 0700 "$launcher"
+              mv -f "$launcher" "$root/source/sync.py"
+            fi
+
+            if test -f "$state/config.local.json" && test -f "$state/keys.json"; then
+              sudo systemctl restart wechat-exporter-sync.service
+              for _ in $(seq 1 18); do
+                published="$(find "$state/published" -maxdepth 1 -type f -name 'published_*.db' -print -quit)"
+                if test -n "$published" && \
+                  WX_EXPORT_STATE_DIR="$state" WX_EXPORT_OUTPUT_DIR="$state/published" \
+                  WX_EXPORT_MANAGED_DEPLOYMENT=1 \
+                  /run/current-system/sw/bin/python3 "$root/current/sync.py" --health --db "$published" --max-age 180; then
+                  printf 'deployed release %s and verified exporter health\n' "$release"
+                  exit 0
+                fi
+                sleep 10
+              done
+              if test -n "$old_current"; then
+                rollback="$root/.rollback.$release"
+                ln -s "$old_current" "$rollback"
+                mv -Tf "$rollback" "$root/current"
+                sudo systemctl restart wechat-exporter-sync.service
+              fi
+              echo "release $release failed health verification; restored previous release" >&2
+              exit 1
+            fi
+            printf 'deployed release %s; bootstrap remains: config.local.json and keys.json\n' "$release"
+      REMOTE
+          trap - EXIT
+          rm -f -- "$archive"
+          ;;
+        rollback)
+          [ "$#" -eq 1 ] || { echo "usage: wechat-vmctl rollback" >&2; exit 2; }
+          # shellcheck disable=SC2016
+          operator_ssh 'set -euo pipefail; root=/var/lib/wechat-exporter; test -L "$root/previous"; previous=$(readlink "$root/previous"); current=$(readlink "$root/current"); next="$root/.rollback"; ln -s "$previous" "$next"; mv -Tf "$next" "$root/current"; next="$root/.previous"; ln -s "$current" "$next"; mv -Tf "$next" "$root/previous"; sudo systemctl restart wechat-exporter-sync.service; printf "restored %s\\n" "$previous"'
+          ;;
+        release-status)
+          [ "$#" -eq 1 ] || { echo "usage: wechat-vmctl release-status" >&2; exit 2; }
+          # shellcheck disable=SC2016
+          operator_ssh 'set -eu; root=/var/lib/wechat-exporter; for link in current previous; do if test -L "$root/$link"; then printf "%s: %s\\n" "$link" "$(readlink "$root/$link")"; else printf "%s: absent\\n" "$link"; fi; done; systemctl is-active wechat-exporter-sync.service || true; find "$root/state/published" -maxdepth 1 -type f -name "sync_health_*.json" -printf "health: %f\\n" 2>/dev/null || true'
           ;;
         trust-host-key)
           [ "$#" -eq 2 ] || { echo "usage: wechat-vmctl trust-host-key SHA256:fingerprint" >&2; exit 2; }
@@ -301,7 +536,7 @@ let
             | /run/wrappers/bin/sudo ${trustHostKey}/bin/wechat-snapshot-trust-host-key "$2"
           ;;
         *)
-          echo "usage: wechat-vmctl {import OVA|configure-network|start|stop|status|console|console-check|pull-key|operator-key|trust-host-key FINGERPRINT|deploy EXPORTER_SOURCE}" >&2
+          echo "usage: wechat-vmctl {import OVA|configure-network|bridge {enable|disable|status}|start|stop|status|console|console-check|pull-key|operator-key|trust-host-key FINGERPRINT|deploy EXPORTER_SOURCE|rollback|release-status}" >&2
           exit 2
           ;;
       esac
@@ -369,6 +604,18 @@ in
     vmName = lib.mkOption {
       type = lib.types.str;
       default = "wechat-exporter";
+    };
+
+    bridgeInterface = lib.mkOption {
+      type = lib.types.str;
+      default = "wlp0s20f3";
+      description = "Host interface used by the opt-in bridged NIC2.";
+    };
+
+    bridgeMac = lib.mkOption {
+      type = lib.types.str;
+      default = "080027A11CE2";
+      description = "Fixed NIC2 MAC matched by the guest firewall policy.";
     };
   };
 

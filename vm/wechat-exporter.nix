@@ -38,22 +38,26 @@ let
     ];
     text = ''
       set -euo pipefail
-      source_dir=/var/lib/wechat-exporter/source
+      release_dir=/var/lib/wechat-exporter/current
+      state_dir=/var/lib/wechat-exporter/state
+      export WX_EXPORT_STATE_DIR="$state_dir"
+      export WX_EXPORT_OUTPUT_DIR="$state_dir/published"
+      export WX_EXPORT_MANAGED_DEPLOYMENT=1
       case "''${1:-}" in
         test)
-          cd "$source_dir"
+          cd "$release_dir"
           exec ${pythonEnv}/bin/python3 -m unittest discover -s tests
           ;;
         acquire-keys)
-          cd "$source_dir"
-          exec ${pythonEnv}/bin/python3 key_scan.py --write-keys keys.json
+          cd "$release_dir"
+          exec ${pythonEnv}/bin/python3 key_scan.py --write-keys
           ;;
         extract)
-          cd "$source_dir"
+          cd "$release_dir"
           exec ${pythonEnv}/bin/python3 extract.py
           ;;
         export)
-          cd "$source_dir"
+          cd "$release_dir"
           exec ${pythonEnv}/bin/python3 export_all.py
           ;;
         start|restart|stop|status)
@@ -131,6 +135,9 @@ in
     hostName = "wechat-exporter";
     networkmanager.enable = true;
     firewall.allowedTCPPorts = [ 22 ];
+    # NIC2 has no carrier by default. This lets the host hot-switch it to the
+    # temporary phone-sync LAN bridge without exposing a live LAN path.
+    firewall.trustedInterfaces = [ "enp0s8" ];
   };
 
   time.timeZone = "Asia/Shanghai";
@@ -149,6 +156,11 @@ in
       vram = 128;
       clipboard = "disabled";
       draganddrop = "disabled";
+      # Preserve NAT and its loopback forwards on NIC1. NIC2 uses a disconnected
+      # NAT attachment so VirtualBox can hot-switch it to the LAN bridge.
+      nic2 = "nat";
+      macaddress2 = "080027A11CE2";
+      cableconnected2 = "off";
       natpf1 = [
         "wechat-pull,tcp,127.0.0.1,22222,,22"
         "wechat-operator,tcp,127.0.0.1,22223,,22"
@@ -240,7 +252,9 @@ in
   systemd.tmpfiles.rules = [
     "d /home/wechat-exporter/.var 0700 wechat-exporter users -"
     "d /var/lib/wechat-exporter 0700 wechat-exporter users -"
-    "d /var/lib/wechat-exporter/published 0700 wechat-exporter users -"
+    "d /var/lib/wechat-exporter/releases 0700 wechat-exporter users -"
+    "d /var/lib/wechat-exporter/state 0700 wechat-exporter users -"
+    "d /var/lib/wechat-exporter/state/published 0700 wechat-exporter users -"
     "d /srv/wechat-snapshot 0750 root wechat-pull -"
     "d /srv/wechat-snapshot/generations 0750 root wechat-pull -"
   ];
@@ -253,17 +267,20 @@ in
       Type = "simple";
       User = "wechat-exporter";
       Group = "users";
-      WorkingDirectory = "/var/lib/wechat-exporter/source";
+      WorkingDirectory = "/var/lib/wechat-exporter/current";
       Environment = [
-        "WX_EXPORT_OUTPUT_DIR=/var/lib/wechat-exporter/published"
+        "WX_EXPORT_STATE_DIR=/var/lib/wechat-exporter/state"
+        "WX_EXPORT_OUTPUT_DIR=/var/lib/wechat-exporter/state/published"
+        "WX_EXPORT_MANAGED_DEPLOYMENT=1"
         "WX_EXPORT_SYNC_INTERVAL=60"
         "PYTHONUNBUFFERED=1"
       ];
       ExecCondition = pkgs.writeShellScript "wechat-exporter-ready" ''
-        test -f /var/lib/wechat-exporter/source/config.local.json
-        test -f /var/lib/wechat-exporter/source/keys.json
+        test -f /var/lib/wechat-exporter/current/sync.py
+        test -f /var/lib/wechat-exporter/state/config.local.json
+        test -f /var/lib/wechat-exporter/state/keys.json
       '';
-      ExecStart = "${pythonEnv}/bin/python3 /var/lib/wechat-exporter/source/sync.py";
+      ExecStart = "${pythonEnv}/bin/python3 /var/lib/wechat-exporter/current/sync.py";
       Restart = "on-failure";
       RestartSec = "30s";
       UMask = "0077";
@@ -294,7 +311,7 @@ in
         "${snapshotTool}/bin/wechat-snapshot"
         "publish"
         "--source-glob"
-        "/var/lib/wechat-exporter/published/published_*.db"
+        "/var/lib/wechat-exporter/state/published/published_*.db"
         "--destination"
         "/srv/wechat-snapshot"
         "--owner"
@@ -308,7 +325,7 @@ in
       PrivateTmp = true;
       ProtectHome = true;
       ProtectSystem = "strict";
-      ReadOnlyPaths = [ "/var/lib/wechat-exporter/published" ];
+      ReadOnlyPaths = [ "/var/lib/wechat-exporter/state/published" ];
       ReadWritePaths = [ "/srv/wechat-snapshot" ];
     };
   };
