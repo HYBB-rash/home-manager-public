@@ -235,11 +235,16 @@ let
         fi
         ${pkgs.coreutils}/bin/install -d -o ${lib.escapeShellArg instance.user} -g ${lib.escapeShellArg instance.group} -m 0750 "$managed_dir"
       '') profileParentDirectories;
-      profileLinks = map (destination: ''
+      secretProfileLinks = map (destination: ''
         link=${lib.escapeShellArg "${hermesHome}/${destination}"}
         ${pkgs.coreutils}/bin/rm -rf -- "$link"
         ${pkgs.coreutils}/bin/ln -s "${stateDir}/profile/${destination}" "$link"
-      '') (instanceProfilePaths instance);
+      '') (lib.attrNames instance.profile.files);
+      sourceProfileLinks = map (destination: ''
+        link=${lib.escapeShellArg "${hermesHome}/${destination}"}
+        ${pkgs.coreutils}/bin/rm -rf -- "$link"
+        ${pkgs.coreutils}/bin/ln "${stateDir}/profile/${destination}" "$link"
+      '') (lib.attrNames instance.profile.sourceFiles);
     in
     pkgs.writeShellScript "${profileUnitName name}-install" ''
       set -euo pipefail
@@ -285,7 +290,8 @@ let
         "$environment_secret" "$hermes_home/.env"
 
       ${lib.concatStringsSep "\n" profileDirectorySetup}
-      ${lib.concatStringsSep "\n" profileLinks}
+      ${lib.concatStringsSep "\n" secretProfileLinks}
+      ${lib.concatStringsSep "\n" sourceProfileLinks}
     '';
 
   mkSopsSecret = name: instance: {
