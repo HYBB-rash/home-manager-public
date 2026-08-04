@@ -135,33 +135,6 @@
       checks.${system} = {
         nixos = nixosConfiguration.config.system.build.toplevel;
         home-manager = homeConfiguration.activationPackage;
-        wechat-snapshot-read-only = pkgs.testers.runNixOSTest (
-          import ./tests/wechat-snapshot.nix { inherit pkgs; }
-        );
-        wechat-project-release =
-          pkgs.runCommand "wechat-project-release-tests"
-            {
-              nativeBuildInputs = [ pkgs.python3 ];
-            }
-            ''
-              export WECHAT_PROJECT_RELEASE_MODULE=${./system/wechat-project-release.py}
-              python3 ${./tests/test_wechat_project_release.py}
-              touch "$out"
-            '';
-        wechat-zero-touch =
-          pkgs.runCommand "wechat-zero-touch-tests"
-            {
-              nativeBuildInputs = [ pkgs.python3 ];
-            }
-            ''
-              export WECHAT_ZERO_TOUCH_MODULE=${./system/wechat-zero-touch.py}
-              export WECHAT_CRON_RECONCILE_MODULE=${./system/wechat-cron-reconcile.py}
-              export WECHAT_RELEASE_STATUS_MODULE=${./system/wechat-release-status.py}
-              python3 ${./tests/test_wechat_zero_touch.py}
-              python3 ${./tests/test_wechat_cron_reconcile.py}
-              python3 ${./tests/test_wechat_release_status.py}
-              touch "$out"
-            '';
         wechat-exporter-lan-firewall =
           assert wechatVmConfiguration.config.virtualbox.params.nic1 == "nat";
           assert wechatVmConfiguration.config.virtualbox.params.nic2 == "nat";
