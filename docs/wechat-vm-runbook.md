@@ -39,6 +39,18 @@ python3 "$HERMES_HOME/skills/wechat-daily/scripts/daily_report.py" \
 默认输出只有消息数、活跃会话数和会话类别。只有在用户明确要求消息级细节时，才可
 添加 `--include-snippets`；不得对源快照执行写入、`VACUUM`、`ATTACH`、导出或复制。
 
+## Cron 职责划分
+
+导出、解密、增量同步和导出健康由 VM 内的 `wechat-exporter-sync.service` 负责；宿主机
+的 `wechat-snapshot-pull.timer` 每分钟验证并拉取完成快照。不要在 Hermes cron 中重跑
+`sync.py`、扫描 VM 的 `published_*.db`，或让 Second User 访问 `/home/user`。
+
+Second User 的 Hermes cron 只运行快照消费者。`$HERMES_HOME/scripts/wechat_snapshot_feed.py`
+从 `WECHAT_SNAPSHOT_DB` 以 immutable 只读方式生成 15 分钟或 24 小时 feed；每日模式将
+公众号编号索引写入 Second User 私有的 `runtime/wechat_daily_brief_items.json`。
+`wechat_brief_search.py` 只查询该索引，不重新读取数据库。cron job 的脚本路径和环境均由
+Second User 的 profile 提供，不设置或使用 `WX_PROJECT_DIR`。
+
 应用宿主机配置并重启 `hermes-user2.service` 后，可以使用下列命令在该服务的
 实际 mount namespace 中做非内容验证：它只检查固定路径是否可读、不可写，不打开或查询数据库。
 
