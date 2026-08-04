@@ -424,6 +424,7 @@ let
             releases="$root/releases"
             state="$root/state"
             incoming="$root/.incoming-$release.tar"
+            mkdir -p "$releases" "$state"
             stage="$(mktemp -d "$releases/.stage.$release.XXXXXX")"
             cleanup() {
               test -z "$stage" || rm -rf -- "$stage"
@@ -432,7 +433,6 @@ let
             trap cleanup EXIT
 
             test -f "$incoming"
-            mkdir -p "$releases" "$state"
             if test ! -e "$state/published" && test -e "$root/published" && ! test -L "$root/published"; then
               mv "$root/published" "$state/published"
             fi
