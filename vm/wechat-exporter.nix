@@ -186,6 +186,13 @@ in
 
     openssh = {
       enable = true;
+      # Use the module option rather than a raw sshd setting: NixOS otherwise
+      # emits its default AuthorizedKeysFile later in sshd_config, leaving the
+      # root-managed exporter key files unused by the running daemon.
+      authorizedKeysFiles = lib.mkForce [
+        "%h/.ssh/authorized_keys"
+        "/var/lib/wechat-exporter/ssh/%u"
+      ];
       settings = {
         PasswordAuthentication = false;
         KbdInteractiveAuthentication = false;
@@ -194,7 +201,6 @@ in
           "wechat-exporter"
           "wechat-pull"
         ];
-        AuthorizedKeysFile = ".ssh/authorized_keys /var/lib/wechat-exporter/ssh/%u";
       };
       extraConfig = ''
         Match User wechat-pull
