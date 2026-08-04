@@ -11,11 +11,66 @@ let
   statePath = "/var/lib/${stateDirectory}";
   operatorHome = "/home/user";
   operatorState = "${operatorHome}/.local/state/wechat-vm";
-  user2ProjectInbox = "${operatorState}/user2-project-inbox";
   virtualBoxHome = "${operatorHome}/.config/VirtualBox";
   vmDirectory = "${operatorHome}/VirtualBox VMs/${cfg.vmName}";
   rdpUser = "wechat-console";
   vboxManage = "/run/current-system/sw/bin/VBoxManage";
+
+  zeroTouchBinding = pkgs.writeText "wechat-zero-touch-binding.json" (
+    builtins.toJSON {
+      binding_version = 1;
+      descriptor_ref = "descriptor.json";
+      consumer_mode = "bundle";
+      plane_bindings = {
+        vm = {
+          runtime_user = "wechat-exporter";
+          managed_root = "/var/lib/wechat-exporter";
+          release_select = {
+            current = "current";
+            previous = "previous";
+          };
+          state_root = "/var/lib/wechat-exporter/state";
+          capabilities = {
+            "vm.pkg" = "/var/lib/wechat-exporter/releases";
+            "vm.state" = "/var/lib/wechat-exporter/state";
+            "vm.published" = "/var/lib/wechat-exporter/state/published";
+            "vm.wx_root" = "runtime-discovered";
+          };
+          units.sync-daemon.service = "wechat-exporter-sync.service";
+        };
+        host = {
+          transport = {
+            ssh_command = "wechat-snapshot-read-v1";
+            tool = "restricted-tar";
+            bridge = "system/wechat-snapshot-bridge.nix";
+            validator = "system/wechat-snapshot.py";
+          };
+          units.pull = {
+            service = "wechat-snapshot-pull.service";
+            timer = "wechat-snapshot-pull.timer";
+          };
+          snapshot_contract_version = 1;
+          pull_interval = cfg.interval;
+          snapshot_retention = cfg.retention;
+        };
+        user2 = {
+          runtime_user = cfg.readerUser;
+          runtime_group = cfg.readerGroup;
+          service = "hermes-user2.service";
+          home = "/var/lib/hermes-user2/home";
+          capabilities = {
+            "user2.snapshot_db" = "${cfg.destination}/current/snapshot.db";
+            "user2.scripts" = "/var/lib/hermes-user2/home/scripts";
+          };
+          cron = {
+            managed_name_prefix = "wechat-zt:";
+            inventory_path = "/var/lib/hermes-user2/home/runtime/wechat-zt-owned-jobs.json";
+            profile = "user2";
+          };
+        };
+      };
+    }
+  );
 
   snapshotTool = pkgs.writeShellApplication {
     name = "wechat-snapshot";
@@ -145,29 +200,109 @@ let
     esac
   '';
 
-  installSecond UserProject = pkgs.writeShellApplication {
-    name = "wechat-user2-project-install";
-    runtimeInputs = [ pkgs.coreutils ];
+  codeReleaseInstaller = pkgs.writeShellApplication {
+    name = "wechat-code-release-install";
+    runtimeInputs = [ pkgs.python3 ];
+    text = ''
+      exec ${pkgs.python3}/bin/python3 ${./wechat-project-release.py} "$@"
+    '';
+  };
+
+  cronReconciler = pkgs.writeShellApplication {
+    name = "wechat-cron-reconcile";
+    runtimeInputs = [ pkgs.python3 ];
+    text = ''
+      exec ${pkgs.python3}/bin/python3 ${./wechat-cron-reconcile.py} "$@"
+    '';
+  };
+
+  zeroTouchRoot = pkgs.writeShellApplication {
+    name = "wechat-zt-root";
+    runtimeInputs = [
+      pkgs.coreutils
+      pkgs.python3
+      pkgs.systemd
+      pkgs.util-linux
+    ];
+    text = ''
+      case "''${1:-}" in
+        preflight)
+          [ "$#" -eq 1 ] || { echo "REFUSED R-111: invalid root preflight arguments" >&2; exit 2; }
+          ;;
+        reconcile)
+          [ "$#" -eq 3 ] && [ "$2" = "--release-dir" ] || {
+            echo "REFUSED R-111: invalid root reconcile arguments" >&2
+            exit 2
+          }
+          ;;
+        *)
+          echo "REFUSED R-111: unsupported root operation" >&2
+          exit 2
+          ;;
+      esac
+      exec ${pkgs.python3}/bin/python3 ${./wechat-zero-touch.py} \
+        --binding ${zeroTouchBinding} \
+        --state-root /var/lib/wechat-zero-touch \
+        --vmctl ${vmctl}/bin/wechat-vmctl \
+        --installer ${codeReleaseInstaller}/bin/wechat-code-release-install \
+        --cron-reconciler ${cronReconciler}/bin/wechat-cron-reconcile \
+        --hermes-cli /run/current-system/sw/bin/hermes-user2-cli \
+        --user2-wrapper /var/lib/hermes-user2/home/scripts/wechat-zt-daily-digest \
+        --user2-home /var/lib/hermes-user2/home \
+        --user2-workspace /var/lib/hermes-user2/workspace \
+        --user2-release-root ${lib.escapeShellArg cfg.destination} \
+        --snapshot-db ${lib.escapeShellArg "${cfg.destination}/current/snapshot.db"} \
+        --systemctl ${pkgs.systemd}/bin/systemctl \
+        --runuser ${pkgs.util-linux}/bin/runuser \
+        --id ${pkgs.coreutils}/bin/id \
+        "$@"
+    '';
+  };
+
+  zeroTouch = pkgs.writeShellApplication {
+    name = "wechat-zt";
+    runtimeInputs = [
+      pkgs.coreutils
+      pkgs.git
+      pkgs.nix
+      pkgs.python3
+      pkgs.gnused
+    ];
     text = ''
       set -euo pipefail
-      [ "$#" -eq 2 ] || { echo "usage: wechat-user2-project-install RELEASE ARCHIVE_NAME" >&2; exit 2; }
-      release=$1
-      archive_name=$2
-      case "$release" in
-        *[!0-9a-f]*) echo "invalid release id" >&2; exit 2 ;;
+      project="''${WX_PROJECT_DIR:-/home/user/Projects/Hermes/wechat-linux-decrypt-demo}"
+      case "''${1:-release}" in
+        release)
+          [ "$#" -le 2 ] || { echo "usage: wechat-zt release [PROJECT_DIR]" >&2; exit 2; }
+          if [ "$#" -eq 2 ]; then
+            project=$2
+          fi
+          project="$(realpath "$project")"
+          [ -d "$project/.git" ] || { echo "not a Git project: $project" >&2; exit 2; }
+          [ -z "$(git -C "$project" status --porcelain)" ] || { echo "REFUSED R-100: project worktree is dirty" >&2; exit 1; }
+          evidence="$(mktemp -t wechat-zt-evidence.XXXXXX.json)"
+          trap 'rm -f -- "$evidence"' EXIT
+          /run/wrappers/bin/sudo -n ${zeroTouchRoot}/bin/wechat-zt-root preflight \
+            | sed -n 's/^OK: //p' >"$evidence"
+          [ -s "$evidence" ] || { echo "REFUSED R-110: preflight produced no evidence" >&2; exit 1; }
+          nix develop "$project" --command make -C "$project" test
+          output="$(python3 "$project/tools/build_release.py" build \
+            --repo "$project" --ready --evidence "$evidence")"
+          printf '%s\n' "$output"
+          release_dir="$(printf '%s\n' "$output" | ${pkgs.gawk}/bin/awk '/^OK: release / { print $5; exit }')"
+          [ -n "$release_dir" ] || { echo "REFUSED R-100: builder returned no release path" >&2; exit 1; }
+          exec /run/wrappers/bin/sudo -n ${zeroTouchRoot}/bin/wechat-zt-root reconcile \
+            --release-dir "$release_dir" </dev/null
+          ;;
+        preflight)
+          [ "$#" -eq 1 ] || { echo "usage: wechat-zt preflight" >&2; exit 2; }
+          exec /run/wrappers/bin/sudo -n ${zeroTouchRoot}/bin/wechat-zt-root preflight </dev/null
+          ;;
+        *)
+          echo "usage: wechat-zt {release [PROJECT_DIR]|preflight}" >&2
+          exit 2
+          ;;
       esac
-      [ "''${#release}" -eq 40 ] || { echo "release id must contain 40 hex characters" >&2; exit 2; }
-      [ "$archive_name" = "$release.tar" ] || { echo "archive name must match release id" >&2; exit 2; }
-      inbox=${lib.escapeShellArg user2ProjectInbox}
-      archive="$inbox/$archive_name"
-      [ -f "$archive" ] && [ ! -L "$archive" ] || { echo "release archive is not a regular file" >&2; exit 1; }
-      exec ${pkgs.python3}/bin/python3 ${./wechat-project-release.py} \
-        --archive "$archive" \
-        --root ${lib.escapeShellArg cfg.destination} \
-        --release "$release" \
-        --owner root \
-        --group ${lib.escapeShellArg cfg.readerGroup} \
-        --expected-archive-owner user
     '';
   };
 
@@ -247,7 +382,6 @@ let
       operator_state=${lib.escapeShellArg operatorState}
       operator_key="$operator_state/operator_ed25519"
       operator_known_hosts=${lib.escapeShellArg "${statePath}/known_hosts"}
-      user2_project_inbox=${lib.escapeShellArg user2ProjectInbox}
       bridge_interface=${lib.escapeShellArg cfg.bridgeInterface}
       bridge_mac=${lib.escapeShellArg cfg.bridgeMac}
       start_service() {
@@ -395,19 +529,6 @@ let
           mv -f "$authorized_stage" "$HOME/.ssh/authorized_keys"
       REMOTE
       }
-      install_user2_project() {
-        release=$1
-        archive=$2
-        install -d -m 0700 "$user2_project_inbox"
-        inbox_archive="$user2_project_inbox/$release.tar"
-        install -m 0600 "$archive" "$inbox_archive"
-        if ! /run/wrappers/bin/sudo ${installSecond UserProject}/bin/wechat-user2-project-install \
-            "$release" "$release.tar"; then
-          rm -f -- "$inbox_archive"
-          return 1
-        fi
-        rm -f -- "$inbox_archive"
-      }
       case "''${1:-}" in
         import)
           [ "$#" -eq 2 ] || { echo "usage: wechat-vmctl import OVA" >&2; exit 2; }
@@ -484,23 +605,42 @@ let
           configure_rootless_pull
           ;;
         deploy)
-          [ "$#" -eq 2 ] || { echo "usage: wechat-vmctl deploy EXPORTER_SOURCE" >&2; exit 2; }
-          source_dir="$(${pkgs.coreutils}/bin/realpath "$2")"
-          [ -d "$source_dir" ] || { echo "exporter source is not a directory: $source_dir" >&2; exit 1; }
-          release="$(git -C "$source_dir" rev-parse --verify HEAD)"
-          release_short="$(git -C "$source_dir" rev-parse --short=12 "$release")"
-          old_vm_current="$(operator_ssh 'readlink /var/lib/wechat-exporter/current 2>/dev/null || true')"
-          archive="$(mktemp -t "wechat-exporter-$release_short.XXXXXX.tar")"
-          trap 'rm -f -- "$archive"' EXIT
-          git -C "$source_dir" archive --format=tar --output="$archive" "$release"
+          remove_archive=0
+          if [ "$#" -eq 5 ] && [ "$2" = "--artifact" ]; then
+            release=$3
+            case "$release" in
+              *[!0-9a-f]*) echo "invalid source release" >&2; exit 2 ;;
+            esac
+            [ "''${#release}" -eq 40 ] || { echo "source release must be a full Git SHA-1" >&2; exit 2; }
+            archive="$(${pkgs.coreutils}/bin/realpath "$4")"
+            [ -f "$archive" ] && [ ! -L "$archive" ] || { echo "VM artifact is not a regular file" >&2; exit 1; }
+            expected_sha=$5
+            actual_sha="sha256:$(${pkgs.coreutils}/bin/sha256sum "$archive" | ${pkgs.gawk}/bin/awk '{print $1}')"
+            [ "$actual_sha" = "$expected_sha" ] || { echo "VM artifact digest mismatch" >&2; exit 1; }
+            release_short="''${release:0:12}"
+          else
+            [ "$#" -eq 2 ] || { echo "usage: wechat-vmctl deploy EXPORTER_SOURCE | deploy --artifact SOURCE_SHA ARCHIVE SHA256" >&2; exit 2; }
+            source_dir="$(${pkgs.coreutils}/bin/realpath "$2")"
+            [ -d "$source_dir" ] || { echo "exporter source is not a directory: $source_dir" >&2; exit 1; }
+            release="$(git -C "$source_dir" rev-parse --verify HEAD)"
+            release_short="$(git -C "$source_dir" rev-parse --short=12 "$release")"
+            archive="$(mktemp -t "wechat-exporter-$release_short.XXXXXX.tar")"
+            remove_archive=1
+            git -C "$source_dir" archive --format=tar --output="$archive" "$release"
+          fi
+          artifact_sha="sha256:$(${pkgs.coreutils}/bin/sha256sum "$archive" | ${pkgs.gawk}/bin/awk '{print $1}')"
+          if [ "$remove_archive" -eq 1 ]; then
+            trap 'rm -f -- "$archive"' EXIT
+          fi
           scp -P 22223 -o BatchMode=yes -o StrictHostKeyChecking=yes \
             -i "$operator_key" -o IdentitiesOnly=yes \
             -o HostKeyAlias=wechat-exporter-vm \
             -o UserKnownHostsFile="$operator_known_hosts" \
             "$archive" wechat-exporter@${lib.escapeShellArg cfg.remoteHost}:"/var/lib/wechat-exporter/.incoming-''${release}.tar"
-          operator_ssh bash -s -- "$release" <<'REMOTE'
+          operator_ssh bash -s -- "$release" "$artifact_sha" <<'REMOTE'
             set -euo pipefail
             release=$1
+            artifact_sha=$2
             root=/var/lib/wechat-exporter
             releases="$root/releases"
             state="$root/state"
@@ -538,15 +678,22 @@ let
 
             tar -xf "$incoming" -C "$stage"
             test -f "$stage/sync.py"
-            test -d "$stage/tests"
-            test_state="$(mktemp -d "$stage/.test-state.XXXXXX")"
-            WX_EXPORT_STATE_DIR="$test_state" \
-              WX_EXPORT_OUTPUT_DIR="$test_state/published" \
-              WX_EXPORT_MANAGED_DEPLOYMENT=1 \
-              /run/current-system/sw/bin/python3 -m unittest discover -s "$stage/tests"
-            rm -rf -- "$test_state"
+            printf '%s\n' "$artifact_sha" >"$stage/.artifact-sha256"
+            if test -d "$stage/tests"; then
+              test_state="$(mktemp -d "$stage/.test-state.XXXXXX")"
+              WX_EXPORT_STATE_DIR="$test_state" \
+                WX_EXPORT_OUTPUT_DIR="$test_state/published" \
+                WX_EXPORT_MANAGED_DEPLOYMENT=1 \
+                /run/current-system/sw/bin/python3 -m unittest discover -s "$stage/tests"
+              rm -rf -- "$test_state"
+            else
+              /run/current-system/sw/bin/python3 -m py_compile "$stage"/*.py
+            fi
 
-            if test ! -d "$releases/$release"; then
+            if test -d "$releases/$release"; then
+              test -f "$releases/$release/.artifact-sha256"
+              test "$(cat "$releases/$release/.artifact-sha256")" = "$artifact_sha"
+            else
               mv "$stage" "$releases/$release"
               stage=
             fi
@@ -619,58 +766,20 @@ let
             fi
             printf 'deployed release %s; bootstrap remains: config.local.json and keys.json\n' "$release"
       REMOTE
-          if ! install_user2_project "$release" "$archive"; then
-            if [ -n "$old_vm_current" ]; then
-              operator_ssh bash -s -- "$old_vm_current" <<'REMOTE'
-                set -euo pipefail
-                old=$1
-                root=/var/lib/wechat-exporter
-                case "$old" in releases/*) ;; *) exit 2 ;; esac
-                test -d "$root/$old"
-                current="$(readlink "$root/current")"
-                next="$root/.restore-current"
-                ln -s "$old" "$next"
-                mv -Tf "$next" "$root/current"
-                next="$root/.restore-previous"
-                ln -s "$current" "$next"
-                mv -Tf "$next" "$root/previous"
-                sudo systemctl restart wechat-exporter-sync.service
-      REMOTE
-            fi
-            echo "Second User project release failed; restored the previous VM code release" >&2
-            exit 1
+          if [ "$remove_archive" -eq 1 ]; then
+            trap - EXIT
+            rm -f -- "$archive"
           fi
-          trap - EXIT
-          rm -f -- "$archive"
-          ;;
-        deploy-project)
-          [ "$#" -eq 2 ] || { echo "usage: wechat-vmctl deploy-project EXPORTER_SOURCE" >&2; exit 2; }
-          source_dir="$(${pkgs.coreutils}/bin/realpath "$2")"
-          [ -d "$source_dir" ] || { echo "exporter source is not a directory: $source_dir" >&2; exit 1; }
-          release="$(git -C "$source_dir" rev-parse --verify HEAD)"
-          release_short="$(git -C "$source_dir" rev-parse --short=12 "$release")"
-          archive="$(mktemp -t "wechat-user2-project-$release_short.XXXXXX.tar")"
-          trap 'rm -f -- "$archive"' EXIT
-          git -C "$source_dir" archive --format=tar --output="$archive" "$release"
-          install_user2_project "$release" "$archive"
-          printf 'deployed Second User project release %s\n' "$release"
           ;;
         rollback)
           [ "$#" -eq 1 ] || { echo "usage: wechat-vmctl rollback" >&2; exit 2; }
           # shellcheck disable=SC2016
-          operator_ssh 'set -euo pipefail; root=/var/lib/wechat-exporter; test -L "$root/previous"; previous=$(readlink "$root/previous"); current=$(readlink "$root/current"); next="$root/.rollback"; ln -s "$previous" "$next"; mv -Tf "$next" "$root/current"; next="$root/.previous"; ln -s "$current" "$next"; mv -Tf "$next" "$root/previous"; sudo systemctl restart wechat-exporter-sync.service; printf "restored %s\\n" "$previous"'
+          operator_ssh 'set -euo pipefail; root=/var/lib/wechat-exporter; test -L "$root/current"; current=$(readlink "$root/current"); if test -L "$root/previous"; then previous=$(readlink "$root/previous"); next="$root/.rollback"; ln -s "$previous" "$next"; mv -Tf "$next" "$root/current"; next="$root/.previous"; ln -s "$current" "$next"; mv -Tf "$next" "$root/previous"; sudo systemctl restart wechat-exporter-sync.service; printf "restored %s\\n" "$previous"; else rm "$root/current"; sudo systemctl stop wechat-exporter-sync.service; printf "removed first code release; state preserved\\n"; fi'
           ;;
         release-status)
           [ "$#" -eq 1 ] || { echo "usage: wechat-vmctl release-status" >&2; exit 2; }
           # shellcheck disable=SC2016
           operator_ssh 'set -eu; root=/var/lib/wechat-exporter; for link in current previous; do if test -L "$root/$link"; then printf "%s: %s\\n" "$link" "$(readlink "$root/$link")"; else printf "%s: absent\\n" "$link"; fi; done; systemctl is-active wechat-exporter-sync.service || true; find "$root/state/published" -maxdepth 1 -type f -name "sync_health_*.json" -printf "health: %f\\n" 2>/dev/null || true'
-          for link in project-current project-previous; do
-            if [ -L ${lib.escapeShellArg cfg.destination}/"$link" ]; then
-              printf 'user2-%s: %s\n' "$link" "$(readlink ${lib.escapeShellArg cfg.destination}/"$link")"
-            else
-              printf 'user2-%s: absent\n' "$link"
-            fi
-          done
           ;;
         trust-host-key)
           [ "$#" -eq 2 ] || { echo "usage: wechat-vmctl trust-host-key SHA256:fingerprint" >&2; exit 2; }
@@ -678,7 +787,7 @@ let
             | /run/wrappers/bin/sudo ${trustHostKey}/bin/wechat-snapshot-trust-host-key "$2"
           ;;
         *)
-          echo "usage: wechat-vmctl {import OVA|configure-network|bridge {enable|disable|status}|start|stop|status|console|console-check|pull-key|operator-key|configure-rootless-pull|trust-host-key FINGERPRINT|deploy EXPORTER_SOURCE|deploy-project EXPORTER_SOURCE|rollback|release-status}" >&2
+          echo "usage: wechat-vmctl {import OVA|configure-network|bridge {enable|disable|status}|start|stop|status|console|console-check|pull-key|operator-key|configure-rootless-pull|trust-host-key FINGERPRINT|deploy EXPORTER_SOURCE|deploy --artifact SOURCE_SHA ARCHIVE SHA256|rollback|release-status}" >&2
           exit 2
           ;;
       esac
@@ -727,7 +836,10 @@ in
     };
 
     pullTransport = lib.mkOption {
-      type = lib.types.enum [ "sftp" "restricted-tar" ];
+      type = lib.types.enum [
+        "sftp"
+        "restricted-tar"
+      ];
       default = "sftp";
       description = "Guest snapshot transport used by the host pull service.";
     };
@@ -787,12 +899,14 @@ in
       snapshotTool
       trustHostKey
       vmctl
+      zeroTouch
     ];
 
     systemd.tmpfiles.rules = [
       "d ${cfg.destination} 0750 root ${cfg.readerGroup} -"
       "d ${cfg.destination}/generations 0750 root ${cfg.readerGroup} -"
-      "d ${cfg.destination}/project-releases 0750 root ${cfg.readerGroup} -"
+      "d ${cfg.destination}/bundle-releases 0750 root ${cfg.readerGroup} -"
+      "d /var/lib/wechat-zero-touch 0700 root root -"
     ];
 
     systemd.services.wechat-snapshot-keygen = {
@@ -936,7 +1050,7 @@ in
             options = [ "NOPASSWD" ];
           }
           {
-            command = "${installSecond UserProject}/bin/wechat-user2-project-install";
+            command = "${zeroTouchRoot}/bin/wechat-zt-root";
             options = [ "NOPASSWD" ];
           }
         ];

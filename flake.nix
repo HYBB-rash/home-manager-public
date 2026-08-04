@@ -138,19 +138,33 @@
         wechat-snapshot-read-only = pkgs.testers.runNixOSTest (
           import ./tests/wechat-snapshot.nix { inherit pkgs; }
         );
-        wechat-project-release = pkgs.runCommand "wechat-project-release-tests" {
-          nativeBuildInputs = [ pkgs.python3 ];
-        } ''
-          export WECHAT_PROJECT_RELEASE_MODULE=${./system/wechat-project-release.py}
-          python3 ${./tests/test_wechat_project_release.py}
-          touch "$out"
-        '';
+        wechat-project-release =
+          pkgs.runCommand "wechat-project-release-tests"
+            {
+              nativeBuildInputs = [ pkgs.python3 ];
+            }
+            ''
+              export WECHAT_PROJECT_RELEASE_MODULE=${./system/wechat-project-release.py}
+              python3 ${./tests/test_wechat_project_release.py}
+              touch "$out"
+            '';
+        wechat-zero-touch =
+          pkgs.runCommand "wechat-zero-touch-tests"
+            {
+              nativeBuildInputs = [ pkgs.python3 ];
+            }
+            ''
+              export WECHAT_ZERO_TOUCH_MODULE=${./system/wechat-zero-touch.py}
+              export WECHAT_CRON_RECONCILE_MODULE=${./system/wechat-cron-reconcile.py}
+              python3 ${./tests/test_wechat_zero_touch.py}
+              python3 ${./tests/test_wechat_cron_reconcile.py}
+              touch "$out"
+            '';
         wechat-exporter-lan-firewall =
           assert wechatVmConfiguration.config.virtualbox.params.nic1 == "nat";
           assert wechatVmConfiguration.config.virtualbox.params.nic2 == "nat";
           assert wechatVmConfiguration.config.virtualbox.params.macaddress2 == "080027A11CE2";
-          assert builtins.elem "enp0s8"
-            wechatVmConfiguration.config.networking.firewall.trustedInterfaces;
+          assert builtins.elem "enp0s8" wechatVmConfiguration.config.networking.firewall.trustedInterfaces;
           pkgs.runCommand "wechat-exporter-lan-firewall" { } ''
             touch "$out"
           '';

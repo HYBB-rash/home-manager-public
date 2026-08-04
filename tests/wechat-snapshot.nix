@@ -38,10 +38,7 @@
         };
       };
 
-      environment.systemPackages = [
-        pkgs.git
-        pkgs.sqlite
-      ];
+      environment.systemPackages = [ pkgs.sqlite ];
     };
 
   testScript = ''
@@ -86,40 +83,15 @@
     )
     machine.succeed(
         "systemctl show hermes-user2.service -p Environment --value "
-        "| grep -F WX_PROJECT_DIR=/var/lib/hermes-user2-wechat/project-current"
+        "| grep -F WX_PROJECT_DIR=/var/lib/hermes-user2-wechat/bundle-current"
     )
     machine.succeed("grep -F -- '--full --once' $(command -v wechat-vmctl)")
     machine.succeed(
-        "install -d -o user -g users /tmp/project-source; "
-        "runuser -u user -- git -C /tmp/project-source init -q; "
-        "runuser -u user -- sh -c '"
-        "echo project-docs > /tmp/project-source/README.md; "
-        "mkdir -p /tmp/project-source/tests; "
-        "echo pass > /tmp/project-source/tests/test_query.py; "
-        "git -C /tmp/project-source add .; "
-        "git -C /tmp/project-source -c user.name=test -c user.email=test@example.invalid commit -qm initial'"
-    )
-    machine.succeed(
-        "runuser -u user -- wechat-vmctl deploy-project /tmp/project-source"
-    )
-    machine.succeed(
-        "release=$(runuser -u user -- git -C /tmp/project-source rev-parse HEAD); "
-        "test \"$(readlink /var/lib/hermes-user2-wechat/project-current)\" "
-        "= \"project-releases/$release\"; "
-        "grep -Fx project-docs /var/lib/hermes-user2-wechat/project-current/README.md; "
-        "test -f /var/lib/hermes-user2-wechat/project-current/tests/test_query.py"
-    )
-    machine.succeed(
-        "pid=$(systemctl show hermes-user2.service -p MainPID --value); "
-        "${pkgs.util-linux}/bin/nsenter --mount=/proc/$pid/ns/mnt "
-        "--setuid=$(${pkgs.coreutils}/bin/id -u user2) "
-        "--setgid=$(getent group hermes-user2 | ${pkgs.coreutils}/bin/cut -d: -f3) "
-        "-- ${pkgs.coreutils}/bin/test -r "
-        "/var/lib/hermes-user2-wechat/project-current/README.md"
-    )
-    machine.fail(
-        "runuser -u user2 -- sh -c "
-        "'echo altered >> /var/lib/hermes-user2-wechat/project-current/README.md'"
+        "test -x /run/current-system/sw/bin/wechat-zt; "
+        "grep -F 'make -C \"$project\" test' /run/current-system/sw/bin/wechat-zt; "
+        "test -f /var/lib/hermes-user2/home/scripts/wechat-zt-daily-digest; "
+        "test ! -L /var/lib/hermes-user2/home/scripts/wechat-zt-daily-digest; "
+        "sudo -l -U user | grep -F wechat-zt-root"
     )
     machine.succeed(
         "pid=$(systemctl show hermes-user2.service -p MainPID --value); "

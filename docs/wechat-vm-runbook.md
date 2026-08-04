@@ -45,12 +45,12 @@ python3 "$HERMES_HOME/skills/wechat-daily/scripts/daily_report.py" \
 的 `wechat-snapshot-pull.timer` 每分钟验证并拉取完成快照。不要在 Hermes cron 中重跑
 `sync.py`、扫描 VM 的 `published_*.db`，或让 Second User 访问 `/home/user`。
 
-Second User 的 Hermes cron 只运行快照消费者。`$HERMES_HOME/scripts/wechat_quarterly_feed.py`
-和 `$HERMES_HOME/scripts/wechat_daily_feed.py` 分别以固定模式从
-`WECHAT_SNAPSHOT_DB` 生成 15 分钟或 24 小时 feed；每日模式将公众号编号索引写入 Second User
-私有的 `runtime/wechat_daily_brief_items.json`。
-`wechat_brief_search.py` 只查询该索引，不重新读取数据库。cron job 的脚本路径和环境均由
-Second User 的 profile 提供，不设置或使用 `WX_PROJECT_DIR`。
+Second User 的 Hermes cron 只运行快照消费者。受管发布拥有的作业使用固定前缀
+`wechat-zt:`，并由 root 编排器保存“作业 ID + 配置指纹”清单；缺失、漂移或同名但
+不属于该清单的作业都会拒绝发布，不会接管用户作业。每日作业运行物理脚本
+`$HERMES_HOME/scripts/wechat-zt-daily-digest`，由当前 consumer bundle 只读查询
+`WECHAT_SNAPSHOT_DB`。`WX_PROJECT_DIR` 指向只读 consumer bundle，只用于读取其
+README/manifest，绝不是数据源。
 
 应用宿主机配置并重启 `hermes-user2.service` 后，可以使用下列命令在该服务的
 实际 mount namespace 中做非内容验证：它只检查固定路径是否可读、不可写，不打开或查询数据库。
@@ -70,7 +70,8 @@ sudo nsenter --mount="/proc/$pid/ns/mnt" \
 
 ## 应用配置、构建和导入
 
-先应用宿主机配置，以安装 `wechat-vmctl`、拉取定时器和 Second User 的只读边界，
+先应用宿主机配置，以安装 `wechat-vmctl`、`wechat-zt`、固定的 root 编排入口、
+拉取定时器和 Second User 的只读边界，
 然后构建并导入虚拟设备：
 
 ```bash
@@ -255,10 +256,30 @@ wechat-exporterctl start
   state/                     # config、keys、解密缓存和 published_*.db
 ```
 
-发布只传送导出项目的已提交 `HEAD`。若 `state` 已准备好配置和密钥，控制器会重启
-服务并最多等待三分钟执行只读健康检查；检查失败会自动恢复 `previous`。首次登录尚未
-完成时，发布会成功完成代码切换并明确提示 bootstrap 未完成，不会把“没有数据”误报成
-发布失败。
+首次应用包含 `wechat-zt-root` 的 NixOS 配置是开发/预配阶段唯一需要的 root 授权：
+
+```bash
+sudo nixos-rebuild switch --flake .#nixos
+```
+
+它只为 User 预授固定的 `wechat-zt-root` 命令，不授予通用 root shell、任意
+`sudo -u user2` 或任意路径写入。根包装器只接受 `preflight` 和
+`reconcile --release-dir <目录>` 两种参数形态；发布目录、描述符、内嵌证据、两个
+工件及其归档成员都会再次校验所有者、路径和 SHA-256。
+
+此后开发者提交代码后，日常发布只有一条命令：
+
+```bash
+wechat-zt release
+```
+
+它关闭 stdin 并使用 `sudo -n`：先完成只读权限/VM/宿主拉取/Second User/cron 预检，
+再对干净的项目 `HEAD` 运行全量测试，构建只含允许清单的 VM 工件和 Second User consumer
+bundle，最后依次部署 VM、触发宿主快照验证、切换 Second User bundle、对账 Hermes cron
+并执行健康检查。相同描述符再次运行是只读 no-op。后段失败会恢复上一版 VM 代码、
+Second User bundle 与 cron；快照和 VM `state` 中的数据、配置、密钥从不参与代码回滚。
+
+下列命令保留给 VM 单平面维护和诊断，不是日常跨平面发布入口：
 
 ```bash
 wechat-vmctl deploy /home/user/Projects/Hermes/wechat-linux-decrypt-demo

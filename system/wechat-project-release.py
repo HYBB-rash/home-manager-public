@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install a validated Git archive as Second User's read-only WeChat project release."""
+"""Install a validated archive as a read-only Second User WeChat code release."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ import tempfile
 MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
 MAX_EXPANDED_BYTES = 128 * 1024 * 1024
 MAX_MEMBERS = 10_000
-RELEASE_RE = re.compile(r"^[0-9a-f]{40}$")
+RELEASE_RE = re.compile(r"^(?:[0-9a-f]{40}|zt-[0-9]{4}\.[0-9]{2}\.[0-9]{2}-r[1-9][0-9]*)$")
 
 
 class ReleaseError(RuntimeError):
@@ -113,9 +113,17 @@ def install_release(
     owner: str,
     group: str,
     expected_archive_owner: str,
+    *,
+    release_directory: str = "project-releases",
+    current_link: str = "project-current",
+    previous_link: str = "project-previous",
+    expected_sha256: str | None = None,
 ) -> pathlib.Path:
     if not RELEASE_RE.fullmatch(release):
-        raise ReleaseError("release must be a full lowercase Git SHA-1")
+        raise ReleaseError("release has an invalid identifier")
+    for name in (release_directory, current_link, previous_link):
+        if not re.fullmatch(r"[a-z][a-z0-9-]*", name):
+            raise ReleaseError("release layout name is invalid")
 
     archive_stat = archive_path.lstat()
     expected_uid = _identity(expected_archive_owner, group=False)
@@ -127,12 +135,14 @@ def install_release(
     uid = _identity(owner, group=False)
     gid = _identity(group, group=True)
     root.mkdir(parents=True, exist_ok=True)
-    releases = root / "project-releases"
+    releases = root / release_directory
     releases.mkdir(mode=0o750, exist_ok=True)
     _chown_mode(root, 0o750, uid, gid)
     _chown_mode(releases, 0o750, uid, gid)
 
     digest = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+    if expected_sha256 is not None and expected_sha256 != f"sha256:{digest}":
+        raise ReleaseError("archive digest does not match the descriptor")
     destination = releases / release
     if destination.exists():
         recorded = destination / ".archive-sha256"
@@ -151,11 +161,11 @@ def install_release(
             if stage.exists():
                 shutil.rmtree(stage)
 
-    current = root / "project-current"
+    current = root / current_link
     old_target = os.readlink(current) if current.is_symlink() else ""
-    _replace_link(current, f"project-releases/{release}")
-    if old_target and old_target != f"project-releases/{release}":
-        _replace_link(root / "project-previous", old_target)
+    _replace_link(current, f"{release_directory}/{release}")
+    if old_target and old_target != f"{release_directory}/{release}":
+        _replace_link(root / previous_link, old_target)
     return destination
 
 
@@ -167,6 +177,10 @@ def main() -> None:
     parser.add_argument("--owner", required=True)
     parser.add_argument("--group", required=True)
     parser.add_argument("--expected-archive-owner", required=True)
+    parser.add_argument("--release-directory", default="project-releases")
+    parser.add_argument("--current-link", default="project-current")
+    parser.add_argument("--previous-link", default="project-previous")
+    parser.add_argument("--expected-sha256")
     args = parser.parse_args()
     try:
         installed = install_release(
@@ -176,6 +190,10 @@ def main() -> None:
             args.owner,
             args.group,
             args.expected_archive_owner,
+            release_directory=args.release_directory,
+            current_link=args.current_link,
+            previous_link=args.previous_link,
+            expected_sha256=args.expected_sha256,
         )
     except (OSError, tarfile.TarError, ReleaseError) as error:
         raise SystemExit(f"wechat-project-release: {error}") from error
