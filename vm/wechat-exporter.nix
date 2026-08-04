@@ -273,6 +273,7 @@ in
         "WX_EXPORT_OUTPUT_DIR=/var/lib/wechat-exporter/state/published"
         "WX_EXPORT_MANAGED_DEPLOYMENT=1"
         "WX_EXPORT_SYNC_INTERVAL=60"
+        "LC_ALL=C"
         "PYTHONUNBUFFERED=1"
       ];
       ExecCondition = pkgs.writeShellScript "wechat-exporter-ready" ''
@@ -294,6 +295,7 @@ in
     };
     path = [
       pkgs.ffmpeg
+      pkgs.flatpak
       pkgs.git
       pythonEnv
       pkgs.zstd

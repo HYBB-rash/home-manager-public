@@ -491,6 +491,8 @@ let
                 'env["WX_EXPORT_STATE_DIR"] = root + "/state"' \
                 'env["WX_EXPORT_OUTPUT_DIR"] = root + "/state/published"' \
                 'env["WX_EXPORT_MANAGED_DEPLOYMENT"] = "1"' \
+                'env["PATH"] = "/run/current-system/sw/bin:" + env.get("PATH", "")' \
+                'env["LC_ALL"] = "C"' \
                 'os.execve(sys.executable, [sys.executable, root + "/current/sync.py"], env)' \
                 >"$launcher"
               chmod 0700 "$launcher"
