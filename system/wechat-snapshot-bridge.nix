@@ -11,6 +11,7 @@ let
   statePath = "/var/lib/${stateDirectory}";
   operatorHome = "/home/user";
   operatorState = "${operatorHome}/.local/state/wechat-vm";
+  user2ProjectInbox = "${operatorState}/user2-project-inbox";
   virtualBoxHome = "${operatorHome}/.config/VirtualBox";
   vmDirectory = "${operatorHome}/VirtualBox VMs/${cfg.vmName}";
   rdpUser = "wechat-console";
@@ -144,6 +145,32 @@ let
     esac
   '';
 
+  installSecond UserProject = pkgs.writeShellApplication {
+    name = "wechat-user2-project-install";
+    runtimeInputs = [ pkgs.coreutils ];
+    text = ''
+      set -euo pipefail
+      [ "$#" -eq 2 ] || { echo "usage: wechat-user2-project-install RELEASE ARCHIVE_NAME" >&2; exit 2; }
+      release=$1
+      archive_name=$2
+      case "$release" in
+        *[!0-9a-f]*) echo "invalid release id" >&2; exit 2 ;;
+      esac
+      [ "''${#release}" -eq 40 ] || { echo "release id must contain 40 hex characters" >&2; exit 2; }
+      [ "$archive_name" = "$release.tar" ] || { echo "archive name must match release id" >&2; exit 2; }
+      inbox=${lib.escapeShellArg user2ProjectInbox}
+      archive="$inbox/$archive_name"
+      [ -f "$archive" ] && [ ! -L "$archive" ] || { echo "release archive is not a regular file" >&2; exit 1; }
+      exec ${pkgs.python3}/bin/python3 ${./wechat-project-release.py} \
+        --archive "$archive" \
+        --root ${lib.escapeShellArg cfg.destination} \
+        --release "$release" \
+        --owner root \
+        --group ${lib.escapeShellArg cfg.readerGroup} \
+        --expected-archive-owner user
+    '';
+  };
+
   repairVmOwnership = pkgs.writeShellScript "wechat-vm-repair-ownership" ''
     set -euo pipefail
     for directory in \
@@ -220,6 +247,7 @@ let
       operator_state=${lib.escapeShellArg operatorState}
       operator_key="$operator_state/operator_ed25519"
       operator_known_hosts=${lib.escapeShellArg "${statePath}/known_hosts"}
+      user2_project_inbox=${lib.escapeShellArg user2ProjectInbox}
       bridge_interface=${lib.escapeShellArg cfg.bridgeInterface}
       bridge_mac=${lib.escapeShellArg cfg.bridgeMac}
       start_service() {
@@ -367,6 +395,19 @@ let
           mv -f "$authorized_stage" "$HOME/.ssh/authorized_keys"
       REMOTE
       }
+      install_user2_project() {
+        release=$1
+        archive=$2
+        install -d -m 0700 "$user2_project_inbox"
+        inbox_archive="$user2_project_inbox/$release.tar"
+        install -m 0600 "$archive" "$inbox_archive"
+        if ! /run/wrappers/bin/sudo ${installSecond UserProject}/bin/wechat-user2-project-install \
+            "$release" "$release.tar"; then
+          rm -f -- "$inbox_archive"
+          return 1
+        fi
+        rm -f -- "$inbox_archive"
+      }
       case "''${1:-}" in
         import)
           [ "$#" -eq 2 ] || { echo "usage: wechat-vmctl import OVA" >&2; exit 2; }
@@ -448,6 +489,7 @@ let
           [ -d "$source_dir" ] || { echo "exporter source is not a directory: $source_dir" >&2; exit 1; }
           release="$(git -C "$source_dir" rev-parse --verify HEAD)"
           release_short="$(git -C "$source_dir" rev-parse --short=12 "$release")"
+          old_vm_current="$(operator_ssh 'readlink /var/lib/wechat-exporter/current 2>/dev/null || true')"
           archive="$(mktemp -t "wechat-exporter-$release_short.XXXXXX.tar")"
           trap 'rm -f -- "$archive"' EXIT
           git -C "$source_dir" archive --format=tar --output="$archive" "$release"
@@ -541,31 +583,77 @@ let
             fi
 
             if test -f "$state/config.local.json" && test -f "$state/keys.json"; then
-              sudo systemctl restart wechat-exporter-sync.service
-              for _ in $(seq 1 18); do
-                published="$(find "$state/published" -maxdepth 1 -type f -name 'published_*.db' -print -quit)"
-                if test -n "$published" && \
-                  WX_EXPORT_STATE_DIR="$state" WX_EXPORT_OUTPUT_DIR="$state/published" \
+              sudo systemctl stop wechat-exporter-sync.service
+              if ! WX_EXPORT_STATE_DIR="$state" \
+                  WX_EXPORT_OUTPUT_DIR="$state/published" \
                   WX_EXPORT_MANAGED_DEPLOYMENT=1 \
-                  /run/current-system/sw/bin/python3 "$root/current/sync.py" --health --db "$published" --max-age 180; then
-                  printf 'deployed release %s and verified exporter health\n' "$release"
-                  exit 0
+                  /run/current-system/sw/bin/python3 "$root/current/sync.py" \
+                    --full --once; then
+                if test -n "$old_current"; then
+                  rollback="$root/.rollback.$release"
+                  ln -s "$old_current" "$rollback"
+                  mv -Tf "$rollback" "$root/current"
                 fi
-                sleep 10
-              done
+                sudo systemctl start wechat-exporter-sync.service
+                echo "release $release failed mandatory full rebuild; restored previous release" >&2
+                exit 1
+              fi
+              sudo systemctl start wechat-exporter-sync.service
+              published="$(find "$state/published" -maxdepth 1 -type f -name 'published_*.db' -print -quit)"
+              if test -n "$published" && \
+                WX_EXPORT_STATE_DIR="$state" WX_EXPORT_OUTPUT_DIR="$state/published" \
+                WX_EXPORT_MANAGED_DEPLOYMENT=1 \
+                /run/current-system/sw/bin/python3 "$root/current/sync.py" \
+                  --health --db "$published" --max-age 180; then
+                printf 'deployed release %s after mandatory full rebuild and verified exporter health\n' "$release"
+                exit 0
+              fi
               if test -n "$old_current"; then
                 rollback="$root/.rollback.$release"
                 ln -s "$old_current" "$rollback"
                 mv -Tf "$rollback" "$root/current"
                 sudo systemctl restart wechat-exporter-sync.service
               fi
-              echo "release $release failed health verification; restored previous release" >&2
+              echo "release $release failed post-rebuild health verification; restored previous release" >&2
               exit 1
             fi
             printf 'deployed release %s; bootstrap remains: config.local.json and keys.json\n' "$release"
       REMOTE
+          if ! install_user2_project "$release" "$archive"; then
+            if [ -n "$old_vm_current" ]; then
+              operator_ssh bash -s -- "$old_vm_current" <<'REMOTE'
+                set -euo pipefail
+                old=$1
+                root=/var/lib/wechat-exporter
+                case "$old" in releases/*) ;; *) exit 2 ;; esac
+                test -d "$root/$old"
+                current="$(readlink "$root/current")"
+                next="$root/.restore-current"
+                ln -s "$old" "$next"
+                mv -Tf "$next" "$root/current"
+                next="$root/.restore-previous"
+                ln -s "$current" "$next"
+                mv -Tf "$next" "$root/previous"
+                sudo systemctl restart wechat-exporter-sync.service
+      REMOTE
+            fi
+            echo "Second User project release failed; restored the previous VM code release" >&2
+            exit 1
+          fi
           trap - EXIT
           rm -f -- "$archive"
+          ;;
+        deploy-project)
+          [ "$#" -eq 2 ] || { echo "usage: wechat-vmctl deploy-project EXPORTER_SOURCE" >&2; exit 2; }
+          source_dir="$(${pkgs.coreutils}/bin/realpath "$2")"
+          [ -d "$source_dir" ] || { echo "exporter source is not a directory: $source_dir" >&2; exit 1; }
+          release="$(git -C "$source_dir" rev-parse --verify HEAD)"
+          release_short="$(git -C "$source_dir" rev-parse --short=12 "$release")"
+          archive="$(mktemp -t "wechat-user2-project-$release_short.XXXXXX.tar")"
+          trap 'rm -f -- "$archive"' EXIT
+          git -C "$source_dir" archive --format=tar --output="$archive" "$release"
+          install_user2_project "$release" "$archive"
+          printf 'deployed Second User project release %s\n' "$release"
           ;;
         rollback)
           [ "$#" -eq 1 ] || { echo "usage: wechat-vmctl rollback" >&2; exit 2; }
@@ -576,6 +664,13 @@ let
           [ "$#" -eq 1 ] || { echo "usage: wechat-vmctl release-status" >&2; exit 2; }
           # shellcheck disable=SC2016
           operator_ssh 'set -eu; root=/var/lib/wechat-exporter; for link in current previous; do if test -L "$root/$link"; then printf "%s: %s\\n" "$link" "$(readlink "$root/$link")"; else printf "%s: absent\\n" "$link"; fi; done; systemctl is-active wechat-exporter-sync.service || true; find "$root/state/published" -maxdepth 1 -type f -name "sync_health_*.json" -printf "health: %f\\n" 2>/dev/null || true'
+          for link in project-current project-previous; do
+            if [ -L ${lib.escapeShellArg cfg.destination}/"$link" ]; then
+              printf 'user2-%s: %s\n' "$link" "$(readlink ${lib.escapeShellArg cfg.destination}/"$link")"
+            else
+              printf 'user2-%s: absent\n' "$link"
+            fi
+          done
           ;;
         trust-host-key)
           [ "$#" -eq 2 ] || { echo "usage: wechat-vmctl trust-host-key SHA256:fingerprint" >&2; exit 2; }
@@ -583,7 +678,7 @@ let
             | /run/wrappers/bin/sudo ${trustHostKey}/bin/wechat-snapshot-trust-host-key "$2"
           ;;
         *)
-          echo "usage: wechat-vmctl {import OVA|configure-network|bridge {enable|disable|status}|start|stop|status|console|console-check|pull-key|operator-key|configure-rootless-pull|trust-host-key FINGERPRINT|deploy EXPORTER_SOURCE|rollback|release-status}" >&2
+          echo "usage: wechat-vmctl {import OVA|configure-network|bridge {enable|disable|status}|start|stop|status|console|console-check|pull-key|operator-key|configure-rootless-pull|trust-host-key FINGERPRINT|deploy EXPORTER_SOURCE|deploy-project EXPORTER_SOURCE|rollback|release-status}" >&2
           exit 2
           ;;
       esac
@@ -697,6 +792,7 @@ in
     systemd.tmpfiles.rules = [
       "d ${cfg.destination} 0750 root ${cfg.readerGroup} -"
       "d ${cfg.destination}/generations 0750 root ${cfg.readerGroup} -"
+      "d ${cfg.destination}/project-releases 0750 root ${cfg.readerGroup} -"
     ];
 
     systemd.services.wechat-snapshot-keygen = {
@@ -837,6 +933,10 @@ in
           }
           {
             command = "${controlVmService}/bin/wechat-vm-service-control";
+            options = [ "NOPASSWD" ];
+          }
+          {
+            command = "${installSecond UserProject}/bin/wechat-user2-project-install";
             options = [ "NOPASSWD" ];
           }
         ];

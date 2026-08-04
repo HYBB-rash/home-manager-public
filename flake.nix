@@ -138,6 +138,13 @@
         wechat-snapshot-read-only = pkgs.testers.runNixOSTest (
           import ./tests/wechat-snapshot.nix { inherit pkgs; }
         );
+        wechat-project-release = pkgs.runCommand "wechat-project-release-tests" {
+          nativeBuildInputs = [ pkgs.python3 ];
+        } ''
+          export WECHAT_PROJECT_RELEASE_MODULE=${./system/wechat-project-release.py}
+          python3 ${./tests/test_wechat_project_release.py}
+          touch "$out"
+        '';
         wechat-exporter-lan-firewall =
           assert wechatVmConfiguration.config.virtualbox.params.nic1 == "nat";
           assert wechatVmConfiguration.config.virtualbox.params.nic2 == "nat";
