@@ -10,6 +10,28 @@ VM 和宿主机桥接层中刻意不包含账号标识、微信密钥、原始�
 只有 root 可以替换 `current` 这一代快照。Second User 通过用户组获得完整快照和
 清单的读取权限；文件权限和 Hermes 的 systemd 沙箱共同禁止写入。
 
+Second User 的 Hermes 服务环境中提供
+`WECHAT_SNAPSHOT_DB=/var/lib/hermes-user2-wechat/current/snapshot.db`，并包含
+`sqlite3`。该路径仅应以只读 URI 使用，例如
+`sqlite3 "file:$WECHAT_SNAPSHOT_DB?mode=ro&immutable=1" 'PRAGMA integrity_check'`；
+不要将快照复制到 workspace，也不要尝试写入。
+
+应用宿主机配置并重启 `hermes-user2.service` 后，可以使用下列命令在该服务的
+实际 mount namespace 中做非内容验证：它只检查固定路径是否可读、不可写，不打开或查询数据库。
+
+```bash
+pid="$(systemctl show hermes-user2.service -p MainPID --value)"
+test "$pid" -gt 0
+sudo nsenter --mount="/proc/$pid/ns/mnt" \
+  --setuid="$(id -u user2)" \
+  --setgid="$(getent group hermes-user2 | cut -d: -f3)" \
+  -- test -r /var/lib/hermes-user2-wechat/current/snapshot.db
+sudo nsenter --mount="/proc/$pid/ns/mnt" \
+  --setuid="$(id -u user2)" \
+  --setgid="$(getent group hermes-user2 | cut -d: -f3)" \
+  -- test ! -w /var/lib/hermes-user2-wechat/current/snapshot.db
+```
+
 ## 应用配置、构建和导入
 
 先应用宿主机配置，以安装 `wechat-vmctl`、拉取定时器和 Second User 的只读边界，

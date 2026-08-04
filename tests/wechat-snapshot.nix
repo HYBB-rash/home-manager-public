@@ -78,6 +78,35 @@
         "| grep -F /var/lib/hermes-user2-wechat"
     )
     machine.succeed(
+        "systemctl show hermes-user2.service -p Environment --value "
+        "| grep -F WECHAT_SNAPSHOT_DB=/var/lib/hermes-user2-wechat/current/snapshot.db"
+    )
+    machine.succeed(
+        "pid=$(systemctl show hermes-user2.service -p MainPID --value); "
+        "test \"$pid\" -gt 0; "
+        "${pkgs.util-linux}/bin/nsenter --mount=/proc/$pid/ns/mnt "
+        "--setuid=$(${pkgs.coreutils}/bin/id -u user2) "
+        "--setgid=$(getent group hermes-user2 | ${pkgs.coreutils}/bin/cut -d: -f3) "
+        "-- ${pkgs.coreutils}/bin/test -r "
+        "/var/lib/hermes-user2-wechat/current/snapshot.db"
+    )
+    machine.succeed(
+        "pid=$(systemctl show hermes-user2.service -p MainPID --value); "
+        "${pkgs.util-linux}/bin/nsenter --mount=/proc/$pid/ns/mnt "
+        "--setuid=$(${pkgs.coreutils}/bin/id -u user2) "
+        "--setgid=$(getent group hermes-user2 | ${pkgs.coreutils}/bin/cut -d: -f3) "
+        "-- ${pkgs.bash}/bin/bash -c 'command -v sqlite3'"
+    )
+    machine.succeed(
+        "pid=$(systemctl show hermes-user2.service -p MainPID --value); "
+        "test \"$pid\" -gt 0; "
+        "! ${pkgs.util-linux}/bin/nsenter --mount=/proc/$pid/ns/mnt "
+        "--setuid=$(${pkgs.coreutils}/bin/id -u user2) "
+        "--setgid=$(getent group hermes-user2 | ${pkgs.coreutils}/bin/cut -d: -f3) "
+        "-- ${pkgs.coreutils}/bin/test -w "
+        "/var/lib/hermes-user2-wechat/current/snapshot.db"
+    )
+    machine.succeed(
         "runuser -u user2 -- sh -c "
         "'test ! -r /var/lib/wechat-snapshot-publisher/id_ed25519'"
     )
