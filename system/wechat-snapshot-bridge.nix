@@ -227,6 +227,24 @@ let
     '';
   };
 
+  user2ReleaseStatus = pkgs.writeShellApplication {
+    name = "wechat-user2-release-status";
+    runtimeInputs = [ pkgs.python3 ];
+    text = ''
+      set -euo pipefail
+      if [ "$#" -eq 1 ] && [ "$1" = status ]; then
+        exec ${pkgs.python3}/bin/python3 ${./wechat-user2-release-status.py} \
+          --root ${lib.escapeShellArg cfg.destination} status
+      fi
+      if [ "$#" -eq 2 ] && [ "$1" = verify-project ]; then
+        exec ${pkgs.python3}/bin/python3 ${./wechat-user2-release-status.py} \
+          --root ${lib.escapeShellArg cfg.destination} verify-project "$2"
+      fi
+      echo "usage: wechat-user2-release-status {status|verify-project RELEASE}" >&2
+      exit 2
+    '';
+  };
+
   codeReleaseInstaller = pkgs.writeShellApplication {
     name = "wechat-code-release-install";
     runtimeInputs = [ pkgs.python3 ];
@@ -824,6 +842,8 @@ let
           trap 'rm -f -- "$archive"' EXIT
           git -C "$source_dir" archive --format=tar --output="$archive" "$release"
           install_user2_project "$release" "$archive"
+          /run/wrappers/bin/sudo ${user2ReleaseStatus}/bin/wechat-user2-release-status \
+            verify-project "$release"
           printf 'deployed Second User project release %s\n' "$release"
           ;;
         rollback)
@@ -835,13 +855,7 @@ let
           [ "$#" -eq 1 ] || { echo "usage: wechat-vmctl release-status" >&2; exit 2; }
           # shellcheck disable=SC2016
           operator_ssh 'set -eu; root=/var/lib/wechat-exporter; for link in current previous; do if test -L "$root/$link"; then printf "%s: %s\\n" "$link" "$(readlink "$root/$link")"; else printf "%s: absent\\n" "$link"; fi; done; systemctl is-active wechat-exporter-sync.service || true; find "$root/state/published" -maxdepth 1 -type f -name "sync_health_*.json" -printf "health: %f\\n" 2>/dev/null || true'
-          for link in project-current project-previous; do
-            if [ -L ${lib.escapeShellArg cfg.destination}/"$link" ]; then
-              printf 'user2-%s: %s\n' "$link" "$(readlink ${lib.escapeShellArg cfg.destination}/"$link")"
-            else
-              printf 'user2-%s: absent\n' "$link"
-            fi
-          done
+          /run/wrappers/bin/sudo ${user2ReleaseStatus}/bin/wechat-user2-release-status status
           ;;
         trust-host-key)
           [ "$#" -eq 2 ] || { echo "usage: wechat-vmctl trust-host-key SHA256:fingerprint" >&2; exit 2; }
@@ -960,6 +974,7 @@ in
     environment.systemPackages = [
       snapshotTool
       trustHostKey
+      user2ReleaseStatus
       vmctl
       zeroTouch
     ];
@@ -1118,6 +1133,10 @@ in
           }
           {
             command = "${installSecond UserProject}/bin/wechat-user2-project-install";
+            options = [ "NOPASSWD" ];
+          }
+          {
+            command = "${user2ReleaseStatus}/bin/wechat-user2-release-status";
             options = [ "NOPASSWD" ];
           }
         ];

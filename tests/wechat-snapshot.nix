@@ -91,11 +91,27 @@
         "grep -F 'make -C \"$project\" test' /run/current-system/sw/bin/wechat-zt; "
         "grep -F 'deploy-project \"$project\"' /run/current-system/sw/bin/wechat-zt; "
         "grep -F 'deploy-project EXPORTER_SOURCE' $(command -v wechat-vmctl); "
+        "grep -F 'verify-project \"$release\"' $(command -v wechat-vmctl); "
         "test -f /var/lib/hermes-user2/home/scripts/wechat-zt-daily-digest.sh; "
         "test ! -L /var/lib/hermes-user2/home/scripts/wechat-zt-daily-digest.sh; "
         "grep -F -- '--max-chars 1800' "
         "/var/lib/hermes-user2/home/scripts/wechat-zt-daily-digest.sh; "
         "sudo -l -U user | grep -F wechat-zt-root"
+    )
+    machine.succeed(
+        "release=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; "
+        "mkdir -p /var/lib/hermes-user2-wechat/project-releases/$release; "
+        "printf '%s\\n' $release >"
+        "/var/lib/hermes-user2-wechat/project-releases/$release/RELEASE; "
+        "ln -s project-releases/$release "
+        "/var/lib/hermes-user2-wechat/project-current; "
+        "runuser -u user -- sudo -n wechat-user2-release-status "
+        "verify-project $release | grep -F "
+        "'verified Second User project release aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'; "
+        "runuser -u user -- sudo -n wechat-user2-release-status status "
+        "| grep -F 'user2-project-current: project-releases/$release'; "
+        "! runuser -u user -- sudo -n wechat-user2-release-status "
+        "status --root /"
     )
     machine.succeed(
         "pid=$(systemctl show hermes-user2.service -p MainPID --value); "

@@ -288,8 +288,10 @@ wechat-zt release
 它关闭 stdin 并使用 `sudo -n`：先完成只读权限/VM/宿主拉取/Second User/cron 预检，
 再对干净的项目 `HEAD` 运行全量测试，构建只含允许清单的 VM 工件和 Second User consumer
 bundle，最后依次部署 VM、触发宿主快照验证、切换 Second User bundle、对账 Hermes cron
-并执行健康检查。相同描述符再次运行是只读 no-op。后段失败会恢复上一版 VM 代码、
-Second User bundle 与 cron；快照和 VM `state` 中的数据、配置、密钥从不参与代码回滚。
+并执行健康检查。完整项目安装到 Second User 后还会通过固定的只读 root 检查确认
+`project-current` 指向本次提交，并确认目标目录中的 `RELEASE` 标记完全一致；任一条件
+不满足都会令发布失败。相同描述符再次运行是只读 no-op。后段失败会恢复上一版 VM
+代码、Second User bundle 与 cron；快照和 VM `state` 中的数据、配置、密钥从不参与代码回滚。
 
 下列命令保留给 VM 单平面维护和诊断，不是日常跨平面发布入口：
 
@@ -298,6 +300,17 @@ wechat-vmctl deploy /home/user/Projects/Hermes/wechat-linux-decrypt-demo
 wechat-vmctl release-status
 wechat-vmctl rollback
 ```
+
+`release-status` 会列出 Second User 当前和上一版项目及 consumer bundle，例如：
+
+```text
+user2-project-current: project-releases/<git-sha>
+user2-bundle-current: bundle-releases/<zt-release-id>
+```
+
+这些状态由固定的只读提权命令检查，普通用户无需取得 Second User 目录权限。`absent` 只表示
+对应选择器确实尚未建立；选择器损坏、越界、目标缺失或权限检查失败都会返回非零状态，
+不会再被误报为 `absent`。
 
 `rollback` 只切换代码软链接并重启服务，绝不回退或删除 `state` 中的微信数据、密钥和
 发布数据库。当前正在运行的已迁移 VM 会保留一个兼容启动器，直到下次重新制作 VM 镜像；
