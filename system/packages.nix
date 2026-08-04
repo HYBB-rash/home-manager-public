@@ -19,7 +19,6 @@
     builtins.elem (lib.getName package) [
       "1password"
       "1password-cli"
-      "virtualbox-extpack"
     ];
 
   # 启用新式 Nix 命令和 flake 支持。

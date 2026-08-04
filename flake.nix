@@ -80,13 +80,6 @@
           ./configuration.nix
         ];
       };
-      wechatVmConfiguration = nixpkgs.lib.nixosSystem {
-        inherit system;
-        modules = [
-          "${nixpkgs}/nixos/modules/virtualisation/virtualbox-image.nix"
-          ./vm/wechat-exporter.nix
-        ];
-      };
       homeConfiguration = home-manager.lib.homeManagerConfiguration {
         inherit pkgs;
 
@@ -107,10 +100,7 @@
     in
     {
       nixosConfigurations.nixos = nixosConfiguration;
-      nixosConfigurations.wechat-exporter = wechatVmConfiguration;
       homeConfigurations.user = homeConfiguration;
-
-      packages.${system}.wechat-exporter-vm = wechatVmConfiguration.config.system.build.virtualBoxOVA;
 
       # 开发工具只在进入 `nix develop` 时可用，不写入 Home Manager 环境。
       devShells.${system}.default = pkgs.mkShell {
@@ -125,14 +115,6 @@
       checks.${system} = {
         nixos = nixosConfiguration.config.system.build.toplevel;
         home-manager = homeConfiguration.activationPackage;
-        wechat-exporter-lan-firewall =
-          assert wechatVmConfiguration.config.virtualbox.params.nic1 == "nat";
-          assert wechatVmConfiguration.config.virtualbox.params.nic2 == "nat";
-          assert wechatVmConfiguration.config.virtualbox.params.macaddress2 == "080027A11CE2";
-          assert builtins.elem "enp0s8" wechatVmConfiguration.config.networking.firewall.trustedInterfaces;
-          pkgs.runCommand "wechat-exporter-lan-firewall" { } ''
-            touch "$out"
-          '';
       };
 
       formatter.${system} = pkgs.nixfmt;
