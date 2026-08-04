@@ -119,6 +119,34 @@ let
           '';
         };
 
+        profile.sourceFiles = mkOption {
+          type = types.attrsOf (
+            types.submodule {
+              options = {
+                source = mkOption {
+                  type = types.path;
+                  description = "Non-secret source file installed into HERMES_HOME.";
+                };
+
+                mode = mkOption {
+                  type = types.enum [
+                    "0640"
+                    "0750"
+                  ];
+                  default = "0640";
+                  description = "Mode after deploying the non-secret profile file.";
+                };
+              };
+            }
+          );
+          default = { };
+          description = ''
+            Stable, non-secret profile files sourced from the Nix store. Use this
+            for versioned skills and helper scripts; never use it for credentials
+            or user profile content.
+          '';
+        };
+
         extraArgs = mkOption {
           type = types.listOf types.str;
           default = [ ];
@@ -171,6 +199,10 @@ let
     [ instance.environmentSecretName ]
     ++ map (file: file.secretName) (lib.attrValues instance.profile.files);
 
+  instanceProfilePaths =
+    instance:
+    lib.unique ((lib.attrNames instance.profile.files) ++ (lib.attrNames instance.profile.sourceFiles));
+
   allSecretNames = flatten (map instanceSecretNames (lib.attrValues enabledInstances));
 
   installProfile =
@@ -190,9 +222,12 @@ let
             ${lib.escapeShellArg secretPath} "$stage/profile/$destination"
         ''
       ) instance.profile.files;
-      profileParentDirectories = lib.unique (
-        concatMap parentDirectories (lib.attrNames instance.profile.files)
-      );
+      sourceProfileFiles = mapAttrsToList (destination: file: ''
+        destination=${lib.escapeShellArg destination}
+        ${pkgs.coreutils}/bin/install -D -o ${lib.escapeShellArg instance.user} -g ${lib.escapeShellArg instance.group} -m ${file.mode} \
+          ${lib.escapeShellArg file.source} "$stage/profile/$destination"
+      '') instance.profile.sourceFiles;
+      profileParentDirectories = lib.unique (concatMap parentDirectories (instanceProfilePaths instance));
       profileDirectorySetup = map (destination: ''
         managed_dir=${lib.escapeShellArg "${hermesHome}/${destination}"}
         if [ -L "$managed_dir" ] || [ -f "$managed_dir" ]; then
@@ -200,11 +235,11 @@ let
         fi
         ${pkgs.coreutils}/bin/install -d -o ${lib.escapeShellArg instance.user} -g ${lib.escapeShellArg instance.group} -m 0750 "$managed_dir"
       '') profileParentDirectories;
-      profileLinks = mapAttrsToList (destination: _: ''
+      profileLinks = map (destination: ''
         link=${lib.escapeShellArg "${hermesHome}/${destination}"}
         ${pkgs.coreutils}/bin/rm -rf -- "$link"
         ${pkgs.coreutils}/bin/ln -s "${stateDir}/profile/${destination}" "$link"
-      '') instance.profile.files;
+      '') (instanceProfilePaths instance);
     in
     pkgs.writeShellScript "${profileUnitName name}-install" ''
       set -euo pipefail
@@ -233,6 +268,7 @@ let
       ${pkgs.coreutils}/bin/install -d -o ${lib.escapeShellArg instance.user} -g ${lib.escapeShellArg instance.group} -m 0750 "$stage/profile"
 
       ${lib.concatStringsSep "\n" profileFiles}
+      ${lib.concatStringsSep "\n" sourceProfileFiles}
       ${pkgs.findutils}/bin/find "$stage/profile" -type d \
         -exec ${pkgs.coreutils}/bin/chown ${lib.escapeShellArg instance.user}:${lib.escapeShellArg instance.group} {} + \
         -exec ${pkgs.coreutils}/bin/chmod 0750 {} +
@@ -306,16 +342,25 @@ in
         message = "Every enabled Hermes instance must deploy encrypted profile.files.\"config.yaml\".";
       }
       {
-        assertion = lib.all (instance: lib.all isSafeRelativePath (lib.attrNames instance.profile.files)) (
+        assertion = lib.all (instance: lib.all isSafeRelativePath (instanceProfilePaths instance)) (
           lib.attrValues enabledInstances
         );
         message = "Hermes profile file destinations must be safe, non-empty relative paths.";
       }
       {
         assertion = lib.all (
-          instance: lib.all (path: !isReservedProfilePath path) (lib.attrNames instance.profile.files)
+          instance: lib.all (path: !isReservedProfilePath path) (instanceProfilePaths instance)
         ) (lib.attrValues enabledInstances);
         message = "Hermes profile files must not replace mutable runtime paths or .env.";
+      }
+      {
+        assertion = lib.all (
+          instance:
+          lib.intersectLists (lib.attrNames instance.profile.files) (
+            lib.attrNames instance.profile.sourceFiles
+          ) == [ ]
+        ) (lib.attrValues enabledInstances);
+        message = "Secret and non-secret Hermes profile files must use distinct destinations.";
       }
       {
         assertion = lib.length allSecretNames == lib.length (lib.unique allSecretNames);

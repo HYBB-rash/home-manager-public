@@ -16,6 +16,29 @@ Second User 的 Hermes 服务环境中提供
 `sqlite3 "file:$WECHAT_SNAPSHOT_DB?mode=ro&immutable=1" 'PRAGMA integrity_check'`；
 不要将快照复制到 workspace，也不要尝试写入。
 
+## Second User 的微信日报技能
+
+`hermes-user2.service` 的 profile 会安装 `wechat-daily` 技能。它只读取上述
+稳定快照路径，默认生成不含消息正文的活动汇总；日报和其他生成物必须留在 Second User
+自己的 workspace，属于私有用户数据，不进入本仓库。
+
+在 Hermes 会话中可先执行不读取消息内容的就绪检查：
+
+```bash
+python3 "$HERMES_HOME/skills/wechat-daily/scripts/daily_report.py" --smoke-test
+```
+
+随后从目标 workspace 生成过去 24 小时的汇总：
+
+```bash
+mkdir -p reports
+python3 "$HERMES_HOME/skills/wechat-daily/scripts/daily_report.py" \
+  --hours 24 --output reports/wechat-daily.md
+```
+
+默认输出只有消息数、活跃会话数和会话类别。只有在用户明确要求消息级细节时，才可
+添加 `--include-snippets`；不得对源快照执行写入、`VACUUM`、`ATTACH`、导出或复制。
+
 应用宿主机配置并重启 `hermes-user2.service` 后，可以使用下列命令在该服务的
 实际 mount namespace 中做非内容验证：它只检查固定路径是否可读、不可写，不打开或查询数据库。
 
