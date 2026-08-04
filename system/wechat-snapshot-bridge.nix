@@ -458,10 +458,12 @@ let
             tar -xf "$incoming" -C "$stage"
             test -f "$stage/sync.py"
             test -d "$stage/tests"
-            WX_EXPORT_STATE_DIR="$state" \
-              WX_EXPORT_OUTPUT_DIR="$state/published" \
+            test_state="$(mktemp -d "$stage/.test-state.XXXXXX")"
+            WX_EXPORT_STATE_DIR="$test_state" \
+              WX_EXPORT_OUTPUT_DIR="$test_state/published" \
               WX_EXPORT_MANAGED_DEPLOYMENT=1 \
               /run/current-system/sw/bin/python3 -m unittest discover -s "$stage/tests"
+            rm -rf -- "$test_state"
 
             if test ! -d "$releases/$release"; then
               mv "$stage" "$releases/$release"
