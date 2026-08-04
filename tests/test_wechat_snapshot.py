@@ -5,8 +5,10 @@ import json
 import os
 import pathlib
 import sqlite3
+import tarfile
 import tempfile
 import unittest
+from unittest import mock
 
 
 MODULE_PATH = pathlib.Path(__file__).parents[1] / "system" / "wechat-snapshot.py"
@@ -119,6 +121,56 @@ class SnapshotTest(unittest.TestCase):
                 self.owner,
                 self.group,
             )
+
+    def test_restricted_tar_fetch_accepts_only_canonical_database(self):
+        self.create_complete_database(1)
+        identity = self.root / "id_ed25519"
+        known_hosts = self.root / "known_hosts"
+        identity.touch()
+        known_hosts.touch()
+
+        def write_archive(command, *, stdout, check):
+            self.assertTrue(check)
+            self.assertEqual(command[-1], "wechat-snapshot-read-v1")
+            with tarfile.open(fileobj=stdout, mode="w") as archive:
+                archive.add(self.source, arcname="snapshot.db")
+
+        with mock.patch.object(snapshot.subprocess, "run", side_effect=write_archive):
+            database = snapshot._fetch_restricted_tar(
+                self.root / "incoming",
+                "127.0.0.1",
+                22222,
+                "wechat-exporter",
+                identity,
+                known_hosts,
+            )
+        self.assertTrue(database.is_file())
+        self.assertEqual(snapshot.inspect_database(database)["integrity_check"], "ok")
+
+    def test_restricted_tar_fetch_rejects_extra_members(self):
+        self.create_complete_database(1)
+        identity = self.root / "id_ed25519"
+        known_hosts = self.root / "known_hosts"
+        extra = self.root / "extra"
+        identity.touch()
+        known_hosts.touch()
+        extra.write_text("unexpected", encoding="utf-8")
+
+        def write_archive(command, *, stdout, check):
+            with tarfile.open(fileobj=stdout, mode="w") as archive:
+                archive.add(self.source, arcname="snapshot.db")
+                archive.add(extra, arcname="extra")
+
+        with mock.patch.object(snapshot.subprocess, "run", side_effect=write_archive):
+            with self.assertRaises(snapshot.SnapshotError):
+                snapshot._fetch_restricted_tar(
+                    self.root / "incoming",
+                    "127.0.0.1",
+                    22222,
+                    "wechat-exporter",
+                    identity,
+                    known_hosts,
+                )
 
 
 if __name__ == "__main__":

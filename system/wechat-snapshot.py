@@ -17,6 +17,7 @@ import shutil
 import sqlite3
 import subprocess
 import tempfile
+import tarfile
 import uuid
 
 
@@ -305,20 +306,98 @@ def _fetch_sftp(
     return database, manifest
 
 
+def _fetch_restricted_tar(
+    incoming: pathlib.Path,
+    host: str,
+    port: int,
+    user: str,
+    identity: pathlib.Path,
+    known_hosts: pathlib.Path,
+) -> pathlib.Path:
+    """Fetch one fixed database stream from a forced-command SSH key."""
+    if not identity.is_file():
+        raise SnapshotError(f"missing host-managed SSH identity: {identity}")
+    if not known_hosts.is_file():
+        raise SnapshotError(f"missing pinned SSH known_hosts file: {known_hosts}")
+
+    incoming.mkdir(parents=True, exist_ok=True)
+    archive = incoming / "snapshot.tar"
+    database = incoming / "snapshot.db"
+    command = [
+        "ssh",
+        "-p",
+        str(port),
+        "-i",
+        str(identity),
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "IdentitiesOnly=yes",
+        "-o",
+        "StrictHostKeyChecking=yes",
+        "-o",
+        f"UserKnownHostsFile={known_hosts}",
+        "-o",
+        "HostKeyAlias=wechat-exporter-vm",
+        f"{user}@{host}",
+        "wechat-snapshot-read-v1",
+    ]
+    try:
+        with archive.open("wb") as output:
+            subprocess.run(command, stdout=output, check=True)
+        with tarfile.open(archive, "r:") as stream:
+            members = stream.getmembers()
+            if (
+                len(members) != 1
+                or members[0].name != "snapshot.db"
+                or not members[0].isreg()
+            ):
+                raise SnapshotError("restricted snapshot stream has unexpected members")
+            source = stream.extractfile(members[0])
+            if source is None:
+                raise SnapshotError("restricted snapshot stream has no database payload")
+            with source, database.open("wb") as output:
+                shutil.copyfileobj(source, output)
+    except (OSError, subprocess.CalledProcessError, tarfile.TarError) as error:
+        raise SnapshotError(f"restricted snapshot fetch failed: {error}") from error
+    finally:
+        archive.unlink(missing_ok=True)
+    return database
+
+
 def pull_snapshot(args: argparse.Namespace) -> pathlib.Path:
     with tempfile.TemporaryDirectory(prefix="wechat-pull-", dir=args.incoming) as temp:
-        database, manifest_path = _fetch_sftp(
-            pathlib.Path(temp),
+        incoming = pathlib.Path(temp)
+        if args.transport == "sftp":
+            database, manifest_path = _fetch_sftp(
+                incoming,
+                args.host,
+                args.port,
+                args.user,
+                pathlib.Path(args.identity),
+                pathlib.Path(args.known_hosts),
+            )
+            manifest = load_and_validate_manifest(database, manifest_path)
+            return _install_generation(
+                database,
+                manifest,
+                pathlib.Path(args.destination),
+                args.owner,
+                args.group,
+                args.retain,
+            )
+        database = _fetch_restricted_tar(
+            incoming,
             args.host,
             args.port,
             args.user,
             pathlib.Path(args.identity),
             pathlib.Path(args.known_hosts),
         )
-        manifest = load_and_validate_manifest(database, manifest_path)
-        return _install_generation(
+        # The guest cannot create a root-owned manifest in the rootless mode.
+        # Rebuild and validate the host generation from the fixed database stream.
+        return publish_source(
             database,
-            manifest,
             pathlib.Path(args.destination),
             args.owner,
             args.group,
@@ -347,6 +426,7 @@ def _parser() -> argparse.ArgumentParser:
     pull.add_argument("--host", required=True)
     pull.add_argument("--port", type=int, default=22)
     pull.add_argument("--user", required=True)
+    pull.add_argument("--transport", choices=["sftp", "restricted-tar"], default="sftp")
     pull.add_argument("--identity", required=True)
     pull.add_argument("--known-hosts", required=True)
     pull.add_argument("--incoming", required=True)

@@ -26,6 +26,8 @@
     # Keep the pre-bridge VM registered and saved as a rollback target while
     # the service manages the rebuilt guest with the LAN firewall policy.
     vmName = "wechat-exporter-lan-secure";
+    remoteUser = "wechat-exporter";
+    pullTransport = "restricted-tar";
   };
 
   # 使用 LXC 在 Plasma Wayland 会话中运行 Android 应用。

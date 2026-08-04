@@ -26,6 +26,7 @@
       services.wechatSnapshotBridge = {
         enable = true;
         enableTimer = false;
+        pullTransport = "restricted-tar";
       };
 
       systemd.services.hermes-user2 = {
@@ -103,6 +104,10 @@
     machine.succeed(
         "systemctl cat wechat-exporter-vm.service "
         "| grep -F 'wechat-vm-configure'"
+    )
+    machine.succeed(
+        "systemctl cat wechat-snapshot-pull.service "
+        "| grep -F -- '--transport restricted-tar'"
     )
   '';
 }

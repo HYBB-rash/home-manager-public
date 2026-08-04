@@ -32,8 +32,8 @@ systemd 控制入口启动 VM，并用 FreeRDP 打开本地控制台。关闭 RD
 因锁屏等原因没有响应，则保存完整 VM 状态后停止，不会直接强制断电。下次
 启动会从保存点继续运行。
 
-导入命令会检查或添加两个仅监听回环地址的 NAT 转发：22222 端口用于仅限
-SFTP 的快照账号，22223 端口用于 VM 操作者。它不会删除或改写已有的冲突
+导入命令会检查或添加两个仅监听回环地址的 NAT 转发：22222 端口用于受限的
+快照拉取，22223 端口用于 VM 操作者。它不会删除或改写已有的冲突
 规则。这个稀疏虚拟设备配有独立的 256 GiB ext4 数据盘，挂载到
 `/home/wechat-exporter/.var`，使微信 Flatpak 账号数据与 50 GiB 系统盘分离。
 
@@ -118,11 +118,10 @@ wechat-vmctl operator-key
 wechat-vmctl pull-key
 ```
 
-在 `wechat-vmctl console` 打开的 VM 控制台中，分别登记上面显示的准确公钥：
+在 `wechat-vmctl console` 打开的 VM 控制台中，只登记操作者公钥：
 
 ```bash
 sudo wechat-authorize-operator 'ssh-ed25519 ...'
-sudo wechat-authorize-puller 'ssh-ed25519 ...'
 ```
 
 在该 VM 控制台中，显示虚拟机主机密钥指纹：
@@ -137,7 +136,17 @@ wechat-show-host-fingerprint
 wechat-vmctl trust-host-key SHA256:...
 ```
 
-拉取私钥仍然只有 root 可访问。操作者私钥保存在宿主机操作者的
+客体当前不提供 root 权限时，改由已登记的操作者通道安装拉取规则：
+
+```bash
+wechat-vmctl configure-rootless-pull
+```
+
+该命令把宿主机 root 持有的拉取公钥写入 `wechat-exporter` 的授权文件，但其
+权限被限制为固定命令 `wechat-snapshot-read-v1`：不能取得 shell、不能转发端口、
+不能请求其他路径；它只能把唯一已完成的 `published_*.db` 以单文件
+`snapshot.db` 流输出。宿主机仍会验证 SQLite 完整性和完整 Schema，并原子发布
+给 Second User。拉取私钥仍然只有 root 可访问；操作者私钥保存在宿主机操作者的
 `~/.local/state/wechat-vm/` 下。Second User 无法访问其中任何一把私钥。
 
 ## 部署并到达登录边界

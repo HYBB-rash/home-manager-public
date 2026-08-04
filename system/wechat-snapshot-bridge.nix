@@ -332,6 +332,41 @@ let
           -o UserKnownHostsFile="$operator_known_hosts" \
           wechat-exporter@${lib.escapeShellArg cfg.remoteHost} "$@"
       }
+      configure_rootless_pull() {
+        pull_key="$(${pkgs.coreutils}/bin/base64 -w0 <${statePath}/id_ed25519.pub)"
+        operator_ssh bash -s -- "$pull_key" <<'REMOTE'
+          set -euo pipefail
+          key="$(printf '%s' "$1" | base64 -d)"
+          case "$key" in
+            'ssh-ed25519 '*) ;;
+            *) exit 2 ;;
+          esac
+          root=/var/lib/wechat-exporter
+          helper="$root/state/snapshot-read-v1"
+          stage="$(mktemp "$root/state/.snapshot-read-v1.XXXXXX")"
+          printf '%s\n' \
+            '#!/bin/sh' \
+            'set -eu' \
+            '[ "''${SSH_ORIGINAL_COMMAND:-}" = "wechat-snapshot-read-v1" ] || exit 126' \
+            'dir=/var/lib/wechat-exporter/state/published' \
+            'set -- "$dir"/published_*.db' \
+            '[ "$#" -eq 1 ] && [ -f "$1" ] || exit 1' \
+            'base=''${1##*/}' \
+            'exec /run/current-system/sw/bin/tar -C "$dir" --transform="s|^$base$|snapshot.db|" -cf - "$base"' \
+            >"$stage"
+          chmod 0700 "$stage"
+          mv -f "$stage" "$helper"
+          install -d -m 0700 "$HOME/.ssh"
+          touch "$HOME/.ssh/authorized_keys"
+          chmod 0600 "$HOME/.ssh/authorized_keys"
+          entry="restrict,command=\"$helper\" $key"
+          authorized_stage="$(mktemp "$HOME/.ssh/.authorized_keys.XXXXXX")"
+          grep -Fv "restrict,command=\"$helper\" " "$HOME/.ssh/authorized_keys" >"$authorized_stage" || true
+          printf '%s\n' "$entry" >>"$authorized_stage"
+          chmod 0600 "$authorized_stage"
+          mv -f "$authorized_stage" "$HOME/.ssh/authorized_keys"
+      REMOTE
+      }
       case "''${1:-}" in
         import)
           [ "$#" -eq 2 ] || { echo "usage: wechat-vmctl import OVA" >&2; exit 2; }
@@ -402,6 +437,10 @@ let
           chmod 0600 "$operator_key"
           chmod 0644 "$operator_key.pub"
           cat "$operator_key.pub"
+          ;;
+        configure-rootless-pull)
+          [ "$#" -eq 1 ] || { echo "usage: wechat-vmctl configure-rootless-pull" >&2; exit 2; }
+          configure_rootless_pull
           ;;
         deploy)
           [ "$#" -eq 2 ] || { echo "usage: wechat-vmctl deploy EXPORTER_SOURCE" >&2; exit 2; }
@@ -544,7 +583,7 @@ let
             | /run/wrappers/bin/sudo ${trustHostKey}/bin/wechat-snapshot-trust-host-key "$2"
           ;;
         *)
-          echo "usage: wechat-vmctl {import OVA|configure-network|bridge {enable|disable|status}|start|stop|status|console|console-check|pull-key|operator-key|trust-host-key FINGERPRINT|deploy EXPORTER_SOURCE|rollback|release-status}" >&2
+          echo "usage: wechat-vmctl {import OVA|configure-network|bridge {enable|disable|status}|start|stop|status|console|console-check|pull-key|operator-key|configure-rootless-pull|trust-host-key FINGERPRINT|deploy EXPORTER_SOURCE|rollback|release-status}" >&2
           exit 2
           ;;
       esac
@@ -590,6 +629,12 @@ in
     remoteUser = lib.mkOption {
       type = lib.types.str;
       default = "wechat-pull";
+    };
+
+    pullTransport = lib.mkOption {
+      type = lib.types.enum [ "sftp" "restricted-tar" ];
+      default = "sftp";
+      description = "Guest snapshot transport used by the host pull service.";
     };
 
     interval = lib.mkOption {
@@ -699,6 +744,8 @@ in
           (toString cfg.remotePort)
           "--user"
           cfg.remoteUser
+          "--transport"
+          cfg.pullTransport
           "--identity"
           "${statePath}/id_ed25519"
           "--known-hosts"
