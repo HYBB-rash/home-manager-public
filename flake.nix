@@ -20,11 +20,6 @@
       inputs.nixpkgs.follows = "nixpkgs-unstable";
     };
 
-    sops-nix = {
-      url = "github:Mic92/sops-nix";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
-
     agent-learning = {
       url = "path:/home/user/Agent/home-manager";
       flake = false;
@@ -53,7 +48,6 @@
       hermes-agent,
       nix-flatpak,
       cc-switch-cli,
-      sops-nix,
       agent-learning,
       ...
     }:
@@ -82,11 +76,7 @@
 
       nixosConfiguration = nixpkgs.lib.nixosSystem {
         inherit system;
-        specialArgs = {
-          hermesAgentPackage = hermes-agent.packages.${system}.default;
-        };
         modules = [
-          sops-nix.nixosModules.sops
           ./configuration.nix
         ];
       };

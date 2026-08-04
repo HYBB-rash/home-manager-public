@@ -1,29 +1,5 @@
 { pkgs, ... }:
-
-let
-  wechatZtDailyDigest = pkgs.writeShellScript "wechat-zt-daily-digest" ''
-    set -euo pipefail
-    bundle=/var/lib/hermes-user2-wechat/bundle-current/bundle/wechat-consumer-zt
-    snapshot=/var/lib/hermes-user2-wechat/current/snapshot.db
-    export WECHAT_SNAPSHOT_DB="$snapshot"
-    case "''${1:-}" in
-      --check-only)
-        [ "$#" -eq 1 ] || exit 2
-        exec "$bundle/bin/wx-check" --db "$snapshot"
-        ;;
-      *)
-        if [ "$#" -eq 0 ]; then
-          exec "$bundle/bin/wx-daily-digest" --db "$snapshot" --text \
-            --max-chars 1800
-        fi
-        echo "unsupported managed wrapper argument" >&2
-        exit 2
-        ;;
-    esac
-  '';
-in
 {
-
   services.gnome.gnome-keyring.enable = true;
   services.printing.enable = true;
 
@@ -48,7 +24,6 @@ in
     # 新内核不再提供 legacy ip_tables 模块，直接使用原生 nftables 网络脚本。
     package = pkgs.waydroid-nftables;
   };
-
 
   services.gvfs.enable = true;
   services.udisks2.enable = true;

@@ -16,11 +16,6 @@
     shell = pkgs.fish;
   };
 
-  users.users.user2 = {
-    isNormalUser = true;
-    description = "Second User";
-  };
-
   security.sudo.extraRules = [
     {
       users = [ "user" ];
