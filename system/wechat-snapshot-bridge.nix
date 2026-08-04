@@ -11,6 +11,7 @@ let
   statePath = "/var/lib/${stateDirectory}";
   operatorHome = "/home/user";
   operatorState = "${operatorHome}/.local/state/wechat-vm";
+  user2ProjectInbox = "${operatorState}/user2-project-inbox";
   virtualBoxHome = "${operatorHome}/.config/VirtualBox";
   vmDirectory = "${operatorHome}/VirtualBox VMs/${cfg.vmName}";
   rdpUser = "wechat-console";
@@ -200,6 +201,32 @@ let
     esac
   '';
 
+  installSecond UserProject = pkgs.writeShellApplication {
+    name = "wechat-user2-project-install";
+    runtimeInputs = [ pkgs.coreutils ];
+    text = ''
+      set -euo pipefail
+      [ "$#" -eq 2 ] || { echo "usage: wechat-user2-project-install RELEASE ARCHIVE_NAME" >&2; exit 2; }
+      release=$1
+      archive_name=$2
+      case "$release" in
+        *[!0-9a-f]*) echo "invalid release id" >&2; exit 2 ;;
+      esac
+      [ "''${#release}" -eq 40 ] || { echo "release id must contain 40 hex characters" >&2; exit 2; }
+      [ "$archive_name" = "$release.tar" ] || { echo "archive name must match release id" >&2; exit 2; }
+      inbox=${lib.escapeShellArg user2ProjectInbox}
+      archive="$inbox/$archive_name"
+      [ -f "$archive" ] && [ ! -L "$archive" ] || { echo "release archive is not a regular file" >&2; exit 1; }
+      exec ${pkgs.python3}/bin/python3 ${./wechat-project-release.py} \
+        --archive "$archive" \
+        --root ${lib.escapeShellArg cfg.destination} \
+        --release "$release" \
+        --owner root \
+        --group ${lib.escapeShellArg cfg.readerGroup} \
+        --expected-archive-owner user
+    '';
+  };
+
   codeReleaseInstaller = pkgs.writeShellApplication {
     name = "wechat-code-release-install";
     runtimeInputs = [ pkgs.python3 ];
@@ -291,8 +318,9 @@ let
           printf '%s\n' "$output"
           release_dir="$(printf '%s\n' "$output" | ${pkgs.gawk}/bin/awk '/^OK: release / { print $5; exit }')"
           [ -n "$release_dir" ] || { echo "REFUSED R-100: builder returned no release path" >&2; exit 1; }
-          exec /run/wrappers/bin/sudo -n ${zeroTouchRoot}/bin/wechat-zt-root reconcile \
+          /run/wrappers/bin/sudo -n ${zeroTouchRoot}/bin/wechat-zt-root reconcile \
             --release-dir "$release_dir" </dev/null
+          ${vmctl}/bin/wechat-vmctl deploy-project "$project"
           ;;
         preflight)
           [ "$#" -eq 1 ] || { echo "usage: wechat-zt preflight" >&2; exit 2; }
@@ -382,6 +410,7 @@ let
       operator_state=${lib.escapeShellArg operatorState}
       operator_key="$operator_state/operator_ed25519"
       operator_known_hosts=${lib.escapeShellArg "${statePath}/known_hosts"}
+      user2_project_inbox=${lib.escapeShellArg user2ProjectInbox}
       bridge_interface=${lib.escapeShellArg cfg.bridgeInterface}
       bridge_mac=${lib.escapeShellArg cfg.bridgeMac}
       start_service() {
@@ -528,6 +557,19 @@ let
           chmod 0600 "$authorized_stage"
           mv -f "$authorized_stage" "$HOME/.ssh/authorized_keys"
       REMOTE
+      }
+      install_user2_project() {
+        release=$1
+        archive=$2
+        install -d -m 0700 "$user2_project_inbox"
+        inbox_archive="$user2_project_inbox/$release.tar"
+        install -m 0600 "$archive" "$inbox_archive"
+        if ! /run/wrappers/bin/sudo ${installSecond UserProject}/bin/wechat-user2-project-install \
+            "$release" "$release.tar"; then
+          rm -f -- "$inbox_archive"
+          return 1
+        fi
+        rm -f -- "$inbox_archive"
       }
       case "''${1:-}" in
         import)
@@ -771,6 +813,19 @@ let
             rm -f -- "$archive"
           fi
           ;;
+        deploy-project)
+          [ "$#" -eq 2 ] || { echo "usage: wechat-vmctl deploy-project EXPORTER_SOURCE" >&2; exit 2; }
+          source_dir="$(${pkgs.coreutils}/bin/realpath "$2")"
+          [ -d "$source_dir" ] || { echo "exporter source is not a directory: $source_dir" >&2; exit 1; }
+          [ -z "$(git -C "$source_dir" status --porcelain)" ] || { echo "project worktree is dirty" >&2; exit 1; }
+          release="$(git -C "$source_dir" rev-parse --verify HEAD)"
+          release_short="$(git -C "$source_dir" rev-parse --short=12 "$release")"
+          archive="$(mktemp -t "wechat-user2-project-$release_short.XXXXXX.tar")"
+          trap 'rm -f -- "$archive"' EXIT
+          git -C "$source_dir" archive --format=tar --output="$archive" "$release"
+          install_user2_project "$release" "$archive"
+          printf 'deployed Second User project release %s\n' "$release"
+          ;;
         rollback)
           [ "$#" -eq 1 ] || { echo "usage: wechat-vmctl rollback" >&2; exit 2; }
           # shellcheck disable=SC2016
@@ -780,6 +835,13 @@ let
           [ "$#" -eq 1 ] || { echo "usage: wechat-vmctl release-status" >&2; exit 2; }
           # shellcheck disable=SC2016
           operator_ssh 'set -eu; root=/var/lib/wechat-exporter; for link in current previous; do if test -L "$root/$link"; then printf "%s: %s\\n" "$link" "$(readlink "$root/$link")"; else printf "%s: absent\\n" "$link"; fi; done; systemctl is-active wechat-exporter-sync.service || true; find "$root/state/published" -maxdepth 1 -type f -name "sync_health_*.json" -printf "health: %f\\n" 2>/dev/null || true'
+          for link in project-current project-previous; do
+            if [ -L ${lib.escapeShellArg cfg.destination}/"$link" ]; then
+              printf 'user2-%s: %s\n' "$link" "$(readlink ${lib.escapeShellArg cfg.destination}/"$link")"
+            else
+              printf 'user2-%s: absent\n' "$link"
+            fi
+          done
           ;;
         trust-host-key)
           [ "$#" -eq 2 ] || { echo "usage: wechat-vmctl trust-host-key SHA256:fingerprint" >&2; exit 2; }
@@ -787,7 +849,7 @@ let
             | /run/wrappers/bin/sudo ${trustHostKey}/bin/wechat-snapshot-trust-host-key "$2"
           ;;
         *)
-          echo "usage: wechat-vmctl {import OVA|configure-network|bridge {enable|disable|status}|start|stop|status|console|console-check|pull-key|operator-key|configure-rootless-pull|trust-host-key FINGERPRINT|deploy EXPORTER_SOURCE|deploy --artifact SOURCE_SHA ARCHIVE SHA256|rollback|release-status}" >&2
+          echo "usage: wechat-vmctl {import OVA|configure-network|bridge {enable|disable|status}|start|stop|status|console|console-check|pull-key|operator-key|configure-rootless-pull|trust-host-key FINGERPRINT|deploy EXPORTER_SOURCE|deploy --artifact SOURCE_SHA ARCHIVE SHA256|deploy-project EXPORTER_SOURCE|rollback|release-status}" >&2
           exit 2
           ;;
       esac
@@ -906,6 +968,7 @@ in
       "d ${cfg.destination} 0750 root ${cfg.readerGroup} -"
       "d ${cfg.destination}/generations 0750 root ${cfg.readerGroup} -"
       "d ${cfg.destination}/bundle-releases 0750 root ${cfg.readerGroup} -"
+      "d ${cfg.destination}/project-releases 0750 root ${cfg.readerGroup} -"
       "d /var/lib/wechat-zero-touch 0700 root root -"
     ];
 
@@ -1051,6 +1114,10 @@ in
           }
           {
             command = "${zeroTouchRoot}/bin/wechat-zt-root";
+            options = [ "NOPASSWD" ];
+          }
+          {
+            command = "${installSecond UserProject}/bin/wechat-user2-project-install";
             options = [ "NOPASSWD" ];
           }
         ];

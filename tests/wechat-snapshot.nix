@@ -83,12 +83,14 @@
     )
     machine.succeed(
         "systemctl show hermes-user2.service -p Environment --value "
-        "| grep -F WX_PROJECT_DIR=/var/lib/hermes-user2-wechat/bundle-current"
+        "| grep -F WX_PROJECT_DIR=/var/lib/hermes-user2-wechat/project-current"
     )
     machine.succeed("grep -F -- '--full --once' $(command -v wechat-vmctl)")
     machine.succeed(
         "test -x /run/current-system/sw/bin/wechat-zt; "
         "grep -F 'make -C \"$project\" test' /run/current-system/sw/bin/wechat-zt; "
+        "grep -F 'deploy-project \"$project\"' /run/current-system/sw/bin/wechat-zt; "
+        "grep -F 'deploy-project EXPORTER_SOURCE' $(command -v wechat-vmctl); "
         "test -f /var/lib/hermes-user2/home/scripts/wechat-zt-daily-digest.sh; "
         "test ! -L /var/lib/hermes-user2/home/scripts/wechat-zt-daily-digest.sh; "
         "sudo -l -U user | grep -F wechat-zt-root"

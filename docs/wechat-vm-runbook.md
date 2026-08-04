@@ -222,6 +222,12 @@ wechat-vmctl configure-rootless-pull
 wechat-vmctl deploy /home/user/Projects/Hermes/wechat-linux-decrypt-demo
 ```
 
+正式发布使用 `wechat-zt release`。VM、宿主快照、Second User consumer bundle 与 cron
+健康检查全部成功后，同一干净 `HEAD` 的完整 Git 归档会安装到 Second User 的只读
+`/var/lib/hermes-user2-wechat/project-current`，并作为 `WX_PROJECT_DIR` 提供给 agent
+阅读项目文档、测试和受测工具。consumer bundle 仍只通过 `WECHAT_SNAPSHOT_DB`
+读取快照，不从源码目录猜测数据库路径。
+
 首次部署后，在 VM 中根据第二个账号的本地设置创建
 `/var/lib/wechat-exporter/state/config.local.json`。不要把密钥放入该文件。然后运行：
 
